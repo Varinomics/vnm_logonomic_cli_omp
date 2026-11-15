@@ -1,4 +1,5 @@
 #include "omp_provider.h"
+#include "omp_lifecycle.h"
 #include "omp_rpc.h"
 
 #include <logonomic_cli_addon/adapter_runtime.h>
@@ -32,6 +33,10 @@ void invoke(addon::Invocation_context& context)
         if (capability == "delegated-session") {
             omp::handle_delegated_session(context);
         }
+        else
+        if (capability == "helper-ingress" || capability == "attention-kind") {
+            omp::handle_lifecycle(context);
+        }
         else {
             context.reject_unknown_operation();
         }
@@ -52,6 +57,8 @@ int main()
         {"presentation", 1}, {"launcher-discovery", 1}, {"launch-preparation", 3},
         {"structured-session", 3}, {"delegated-session", 3}, {"delegated-model-selection", 1},
         {"structured-failure-diagnostics", 1},
+        {"managed-assets", 1}, {"lifecycle-events", 2}, {"helper-ingress", 2}, {"attention-kind", 1},
+        {"model-context-delivery", 2}, {"coordination-delivery", 1},
     };
     addon::Adapter_runtime runtime(std::move(options));
     runtime.set_invoke_handler(invoke);

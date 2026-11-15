@@ -2,12 +2,70 @@
 
 #include <logonomic_cli_addon/launch_preparation.h>
 #include <logonomic_cli_addon/launcher_utilities.h>
+#include <logonomic_cli_addon/package_source.h>
 
 #include <algorithm>
 #include <utility>
 
 namespace omp {
 namespace addon = logonomic::cli_addon;
+
+namespace {
+
+constexpr std::string_view extension_asset = "assets/logonomic.ts";
+
+bool one_of(std::string_view option, std::initializer_list<std::string_view> options)
+{
+    return std::find(options.begin(), options.end(), option) != options.end();
+}
+
+std::optional<bool> interactive_flags(std::span<const std::string> arguments)
+{
+    bool trusted = false;
+    bool ordinary_extension = false;
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const std::string_view argument = arguments[index];
+        const auto equals = argument.find('=');
+        const auto option = argument.substr(0, equals);
+        if (one_of(option, {"--provider", "--model", "--thinking", "--approval-mode", "--profile", "--cwd", "--add-dir",
+                "--config", "--tools", "--skills", "--system-prompt",
+                "--append-system-prompt", "--system-prompt-template", "--extension", "-e", "--hook",
+                "--trusted-extension", "--session-dir", "--fork", "--plugin-dir", "--api-key", "--goal",
+                "--smol", "--slow", "--max-time", "--max-cost", "--warn-cost", "--service-tier"})) {
+            trusted = trusted || option == "--trusted-extension";
+            ordinary_extension = ordinary_extension || one_of(option, {"--extension", "-e", "--hook"});
+            if (equals == std::string_view::npos && ++index >= arguments.size()) {
+                return std::nullopt;
+            }
+        }
+        else
+        if (one_of(option, {"--resume", "-r", "--session", "--restore"})) {
+            if (equals == std::string_view::npos && index + 1 < arguments.size() &&
+                !arguments[index + 1].starts_with('-')) {
+                ++index;
+            }
+        }
+        else
+        if (one_of(option, {"--continue", "-c", "--no-extensions", "--no-session", "--no-tools", "--no-skills",
+                "--no-rules", "--no-context-files", "--no-lsp", "--no-title", "--allow-home", "--offline",
+                "--hide-thinking", "--auto-approve", "--yolo"})) {
+            if (equals != std::string_view::npos) {
+                return std::nullopt;
+            }
+        }
+        else {
+            return std::nullopt;
+        }
+    }
+    return trusted && ordinary_extension ? std::nullopt : std::optional<bool>(trusted);
+}
+
+} // namespace
+
+bool interactive_arguments(std::span<const std::string> arguments)
+{
+    return interactive_flags(arguments).has_value();
+}
 
 std::optional<Launcher_command> recognize_launcher(
     const addon::Launcher_request& launcher,
@@ -90,6 +148,47 @@ void handle_launch_preparation(addon::Invocation_context& context)
     patch.disposition     = addon::Launch_disposition{false, false, false};
     patch.profile_storage = request->profile_storage;
     patch.account_context = request->account_context;
+    const auto unchanged = [&] { context.succeed(addon::encode_launch_patch(patch)); };
+    if (!request->launch_environment ||
+        std::find(request->declared_assets.begin(), request->declared_assets.end(), extension_asset) == request->declared_assets.end()) {
+        unchanged();
+        return;
+    }
+    const auto& launch_environment = *request->launch_environment;
+    const auto launcher = recognize_launcher(request->launcher, launch_environment.platform_id, request->launcher_argv);
+    if (!launcher || !interactive_arguments(launcher->arguments)) {
+        unchanged();
+        return;
+    }
+    const auto environment = addon::environment_pairs(launch_environment.effective_environment);
+    const auto program = addon::resolve_program(launcher->program, environment, request->working_directory);
+    if (!program || (launch_environment.platform_id.starts_with("windows-") && !addon::native_image(*program))) {
+        unchanged();
+        return;
+    }
+    for (const auto& name : launcher->environment_names) {
+        const auto value = std::find_if(environment.begin(), environment.end(), [&](const auto& entry) {
+            return launch_environment.platform_id.starts_with("windows-") ?
+                addon::lower(entry.first) == addon::lower(name) : entry.first == name;
+        });
+        if (value == environment.end()) {
+            unchanged();
+            return;
+        }
+    }
+    const bool trusted = *interactive_flags(launcher->arguments);
+    std::vector<std::string> arguments{addon::path_to_utf8(*program)};
+    arguments.insert(arguments.end(), launcher->arguments.begin(), launcher->arguments.end());
+    arguments.insert(arguments.end(), {trusted ? "--trusted-extension" : "--extension", "{{asset:assets/logonomic.ts}}"});
+    patch.argv = std::move(arguments);
+    for (const auto& name : launcher->environment_names) {
+        const auto value = std::find_if(environment.begin(), environment.end(), [&](const auto& entry) {
+            return launch_environment.platform_id.starts_with("windows-") ?
+                addon::lower(entry.first) == addon::lower(name) : entry.first == name;
+        });
+        patch.set.emplace_back(name, value->second);
+    }
+    patch.disposition = addon::Launch_disposition{true, true, true};
     context.succeed(addon::encode_launch_patch(patch));
 }
 

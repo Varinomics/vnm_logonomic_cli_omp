@@ -1,0 +1,19 @@
+{
+  "capability_id": "lifecycle-events",
+  "version": 2,
+  "payload": {
+    "profile_id": "omp-native-extension",
+    "observation": "events",
+    "turn_origin_correlation": "unsupported",
+    "features": {
+      "root_turn_start": "supported",
+      "root_turn_completion": "supported",
+      "confirmed_phase_status": "supported",
+      "attention": "supported",
+      "paired_attention": "supported",
+      "subagents": "supported",
+      "cooperative_description": "unsupported",
+      "blockable_completion": "unsupported"
+    }
+  }
+}

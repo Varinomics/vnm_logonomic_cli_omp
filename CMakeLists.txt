@@ -50,7 +50,7 @@ function(omp_target target)
     endif()
 endfunction()
 
-add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp)
+add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp src/omp_lifecycle.cpp)
 target_include_directories(omp_provider PUBLIC src)
 target_link_libraries(omp_provider PUBLIC logonomic_cli_addon_sdk::sdk)
 omp_target(omp_provider)
@@ -61,12 +61,14 @@ omp_target(omp_adapter)
 
 logonomic_cli_addon_add_launch_bridge(omp_launch_bridge)
 omp_target(omp_launch_bridge)
+add_executable(omp_helper src/omp_helper.cpp)
+omp_target(omp_helper)
 
 logonomic_cli_addon_package_platform(OMP_PLATFORM)
 set(OMP_EXECUTABLE_SUFFIX "${CMAKE_EXECUTABLE_SUFFIX}")
 configure_file(package/logonomic-cli-addon.json.in generated/logonomic-cli-addon.json @ONLY)
 logonomic_cli_addon_add_package(omp_package logonomic.cli.omp OMP_PACKAGE_DIRECTORY
-    ADAPTER omp_adapter HELPERS omp_launch_bridge)
+    ADAPTER omp_adapter HELPERS omp_launch_bridge omp_helper)
 
 if(LOGONOMIC_CLI_ADDON_EMBEDDED)
     return()
@@ -81,9 +83,23 @@ add_executable(omp_rpc_tests tests/omp_rpc_tests.cpp)
 target_link_libraries(omp_rpc_tests PRIVATE omp_provider)
 omp_target(omp_rpc_tests)
 add_test(NAME omp_rpc_tests COMMAND omp_rpc_tests)
+add_executable(omp_lifecycle_tests tests/omp_lifecycle_tests.cpp)
+target_link_libraries(omp_lifecycle_tests PRIVATE omp_provider)
+omp_target(omp_lifecycle_tests)
+add_test(NAME omp_lifecycle_tests COMMAND omp_lifecycle_tests)
+find_program(OMP_NODE_EXECUTABLE node)
+if(OMP_NODE_EXECUTABLE)
+    execute_process(COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types --version
+        RESULT_VARIABLE OMP_NODE_TYPES_RESULT OUTPUT_QUIET ERROR_QUIET)
+    if(OMP_NODE_TYPES_RESULT EQUAL 0)
+        add_test(NAME omp_extension_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/omp_extension_tests.mjs")
+        set_tests_properties(omp_extension_tests PROPERTIES TIMEOUT 30 LABELS "cli-addon;native-contract")
+    endif()
+endif()
 add_test(NAME omp_package_validation COMMAND logonomic_cli_addon_validate
     "${OMP_PACKAGE_DIRECTORY}" --platform "${OMP_PLATFORM}")
 add_test(NAME omp_package_conformance COMMAND logonomic_cli_addon_conformance
     "${OMP_PACKAGE_DIRECTORY}")
-set_tests_properties(omp_provider_tests omp_rpc_tests omp_package_validation omp_package_conformance
+set_tests_properties(omp_provider_tests omp_rpc_tests omp_lifecycle_tests omp_package_validation omp_package_conformance
     PROPERTIES TIMEOUT 120 LABELS "cli-addon;provider-contract")

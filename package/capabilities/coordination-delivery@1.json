@@ -1,0 +1,5 @@
+{
+  "capability_id": "coordination-delivery",
+  "version": 1,
+  "payload": {"startup_instruction_delivery":"supported","turn_context_delivery":"supported"}
+}

@@ -24,6 +24,10 @@ std::optional<Launcher_command> recognize_launcher(
     std::string_view platform_id,
     std::optional<std::span<const std::string>> host_argv = std::nullopt);
 
+/// Preparation accepts the known native interactive option grammar and
+/// leaves subcommands, noninteractive modes and extension-owned flags alone.
+bool interactive_arguments(std::span<const std::string> arguments);
+
 void handle_discovery(logonomic::cli_addon::Invocation_context& context);
 void handle_launch_preparation(logonomic::cli_addon::Invocation_context& context);
 

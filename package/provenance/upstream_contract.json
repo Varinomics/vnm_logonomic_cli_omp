@@ -2,11 +2,25 @@
   "repository": "https://github.com/can1357/oh-my-pi",
   "package": "@oh-my-pi/pi-coding-agent",
   "inspected_version": "18.20.2",
+  "inspected_commit": "7a52f1e35eacc115b067c03a9c8ec7263e114cda",
   "contracts": [
     "packages/coding-agent/package.json",
     "packages/coding-agent/src/cli/args.ts",
+    "packages/coding-agent/src/cli/flag-tables.ts",
+    "packages/coding-agent/src/main.ts",
+    "packages/coding-agent/src/extensibility/extensions/types.ts",
+    "packages/coding-agent/src/extensibility/shared-events.ts",
+    "packages/coding-agent/src/session/agent-session.ts",
+    "packages/coding-agent/src/session/session-manager.ts",
+    "packages/coding-agent/src/task/executor.ts",
+    "packages/tui/src/overlays/session-observer-registry.ts",
     "docs/extensions.md",
     "docs/rpc.md"
   ],
-  "compatibility_policy": "Native capabilities and protocol behavior decide compatibility; the inspected version is not a ceiling."
+  "compatibility_policy": "Native capabilities and protocol behavior decide compatibility; the inspected version is neither a minimum nor a ceiling.",
+  "interactive_coverage": {
+    "subagents": "Immediate task/eval children on the public session EventBus; no private whole-tree, tan, or advisor claim.",
+    "attention": "Native root tool approval and plan review pairs; inferred root UI ask tool execution pairs.",
+    "exact_resume": "Not advertised: native path resume follows continuations and may fork moved sessions."
+  }
 }
