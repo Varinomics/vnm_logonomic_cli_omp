@@ -1,0 +1,13 @@
+{
+  "bootstrap_version": 1,
+  "package_id": "logonomic.cli.omp",
+  "release_version": "@PROJECT_VERSION@",
+  "platforms": ["@OMP_PLATFORM@"],
+  "adapter": {
+    "path": {"@OMP_PLATFORM@": "adapter/omp_adapter@OMP_EXECUTABLE_SUFFIX@"},
+    "argv": [],
+    "environment": {}
+  },
+  "core_protocol_generations": [1],
+  "integrity_index": "package.files.json"
+}

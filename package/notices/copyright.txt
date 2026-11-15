@@ -1,0 +1,5 @@
+Copyright 2026 Varinomics. All rights reserved.
+
+oh-my-pi names the independently installed upstream software. This package
+does not include the oh-my-pi distribution or imply upstream endorsement.
+The package's pi-symbol icon is original artwork.

@@ -1,0 +1,8 @@
+{
+  "capability_id": "presentation",
+  "version": 1,
+  "payload": {
+    "display_name": "oh-my-pi",
+    "icon": {"light": "assets/omp.svg", "dark": "assets/omp.svg"}
+  }
+}

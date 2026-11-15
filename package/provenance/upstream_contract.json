@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/can1357/oh-my-pi",
+  "package": "@oh-my-pi/pi-coding-agent",
+  "inspected_version": "18.20.2",
+  "contracts": [
+    "packages/coding-agent/package.json",
+    "packages/coding-agent/src/cli/args.ts",
+    "docs/extensions.md",
+    "docs/rpc.md"
+  ],
+  "compatibility_policy": "Native capabilities and protocol behavior decide compatibility; the inspected version is not a ceiling."
+}
