@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
@@ -58,6 +59,7 @@ Json assistant(const char* text)
 {
     return json::object({{"type", Json("message_end")}, {"messageId", Json("msg-2")},
         {"message", json::object({{"role", Json("assistant")}, {"stopReason", Json("stop")},
+            {"provider", Json("test")}, {"model", Json("exact-model")},
             {"content", Json(Json::Array{json::object({{"type", Json("thinking")}, {"thinking", Json("private reasoning")}}),
                 json::object({{"type", Json("text")}, {"text", Json(text)}})})}})}});
 }
@@ -68,7 +70,7 @@ public:
     explicit Temporary_directory(const char* executable)
     {
         const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-        m_path = std::filesystem::temp_directory_path() / ("omp rpc test " + std::to_string(nonce));
+        m_path = std::filesystem::temp_directory_path() / addon::path_from_utf8("omp rpc test \xc3\xa9 " + std::to_string(nonce));
         std::filesystem::create_directory(m_path);
 #ifdef _WIN32
         m_program = m_path / "omp.exe";
@@ -209,6 +211,43 @@ void preparation_contract(const Temporary_directory& directory)
         request.context.launcher.script_body += " " + std::string(argument);
         request.context.launcher_argv.push_back(argument);
         require(!omp::prepare_structured_session(request, &failure), "Ambiguous or task-bearing launchers must be refused");
+    }
+}
+
+void ambient_profile_contract(const Temporary_directory& directory)
+{
+    const auto sidecars = std::filesystem::path(__FILE__).parent_path().parent_path() / "package" / "capabilities";
+    for (const auto* capability : {"structured-session@3.json", "delegated-session@3.json"}) {
+        std::ifstream stream(sidecars / capability, std::ios::binary);
+        require(stream.good(), "The tested capability declaration must be available");
+        const auto sidecar = parse(std::string(std::istreambuf_iterator<char>(stream), {}));
+        addon::Contract_failure failure;
+        const auto declaration = addon::decode_purposes_declaration(json::member(sidecar, "payload"), &failure);
+        require(declaration.has_value(), "The environment declaration must satisfy SDK bounds");
+        const std::vector<std::pair<std::string, std::string>> ambient = {
+            {"OMP_PROFILE", ""}, {"PI_PROFILE", "ignored-legacy-profile"}, {"PI_CONFIG_DIR", ".omp-task-profile"},
+            {"PI_CODING_AGENT_DIR", directory.path()}, {"XDG_STATE_HOME", directory.path()},
+            {"XDG_CACHE_HOME", directory.path()}, {"OPENAI_API_KEY", "fixture-key"},
+            {"OPENAI_BASE_URL", "http://127.0.0.1:1"}, {"ANTHROPIC_BASE_URL", "http://127.0.0.1:2"},
+            {"AZURE_OPENAI_BASE_URL", "http://127.0.0.1:3"}, {"AWS_DEFAULT_REGION", "us-east-2"},
+        };
+        auto request = request_for(directory);
+        request.context.launcher = {'"' + directory.program() + '"', "direct", ""};
+        request.context.launcher_argv = {directory.program()};
+        auto& environment = *request.context.launch_environment;
+        environment.effective_environment = addon::ambient_view(ambient,
+            addon::Launcher_discovery_declaration{declaration->environment_names}, environment.platform_id);
+        for (const auto& [name, value] : ambient) {
+            require(json::member(environment.effective_environment, name) == Json(value),
+                "Ambient profile, path and model routing selectors must survive SDK allowlisting exactly");
+        }
+        const auto prepared = omp::prepare_structured_session(request, &failure);
+        require(prepared.has_value(), "An ambient-only selected profile must prepare without launcher assignments");
+        for (const auto& [name, value] : ambient) {
+            static_cast<void>(value);
+            require(std::find(prepared->process.environment_names.begin(), prepared->process.environment_names.end(), name) !=
+                prepared->process.environment_names.end(), "The process must inherit every frozen ambient selector");
+        }
     }
 }
 
@@ -398,9 +437,11 @@ void delegation_contract(const Temporary_directory& directory)
     addon::Contract_failure failure;
     const auto result = omp::prepare_delegated_session(request, &failure);
     require(result.has_value(), "Delegation must prepare the verified native plugin route");
-    require(result->private_artifacts.size() == 2 && result->private_artifacts[0].relative_path == "plugin.json" &&
-        result->private_artifacts[1].relative_path == "mcp.json", "Only host-written plugin artifacts belong under the supplied task root");
-    require(result->process.argv.back() == directory.path(), "The exact private-artifact root must be passed to native plugin discovery");
+    require(result->private_artifacts.size() == 4 && result->private_artifacts[0].relative_path == ".claude-plugin/plugin.json" &&
+        result->private_artifacts[1].relative_path == ".mcp.json", "The host relay must use OMP's plugin format that accepts an absolute command");
+    const auto plugin_flag = std::find(result->process.argv.begin(), result->process.argv.end(), "--plugin-dir");
+    require(plugin_flag != result->process.argv.end() && *(plugin_flag + 1) == directory.path(),
+        "The exact private-artifact root must be passed to native plugin discovery");
     const auto config = parse(result->private_artifacts[1].content);
     const auto& server = json::member(json::member(config, "mcpServers"), "s0");
     require(json::text(server, "command") == directory.program() && !server.find("env"),
@@ -412,21 +453,68 @@ void delegation_contract(const Temporary_directory& directory)
         "Delegation and model acknowledgments must satisfy the SDK's exact echo checks");
     require(addon::decode_delegated_prepare_result(addon::encode_delegated_prepare_result(*result), &failure).has_value(),
         "Delegation preparation must round-trip the SDK wire contract");
+    const auto selection = parse(result->private_artifacts.back().content);
+    require(json::member(json::member(selection, "retry"), "modelFallback") == Json(false) &&
+        json::member(json::member(selection, "contextPromotion"), "enabled") == Json(false) && !selection.find("tools"),
+        "Explicit model selection must prevent native automatic replacement without changing tool or approval settings");
 
     Conversation missing(result->inspection.protocol_state);
-    require(missing.start().failure_reason == "task_control_unavailable", "A configured relay is insufficient without native action visibility");
+    require(json::text(parse(*missing.start().stdin_bytes), "type") == "get_entries",
+        "Delegated readiness must use native enabled MCP metadata, including xd devices");
+    const auto empty_inventory = json::object({{"entries", Json::array()}, {"leafId", Json()}});
+    require(missing.send(response("lg-tools", "get_entries", empty_inventory)).failure_reason == "task_control_unavailable",
+        "A configured relay is insufficient without task-scoped native action visibility");
     auto idle = k_idle;
     auto tools = Json::array();
     const auto state = parse(result->inspection.protocol_state);
-    for (const auto& name : json::member(state, "expected_tools").as_array()) {
-        tools.push_back(json::object({{"name", name}, {"description", Json("Host task action")}, {"parameters", Json::object()}}));
+    for (const auto& wanted : json::member(state, "expected_tools").as_array()) {
+        auto observed = wanted;
+        observed.set("name", Json("mcp__native_" + json::text(wanted, "action")));
+        tools.push_back(std::move(observed));
     }
-    idle.set("dumpTools", tools);
+    const auto inventory_entry = json::object({{"type", Json("custom")}, {"customType", Json("logonomic-task-control")},
+        {"id", Json("entry-1")}, {"data", json::object({{"version", Json(1)}, {"scope", json::member(state, "tool_scope")}, {"tools", tools}})}});
+    const auto inventory = json::object({{"entries", Json(Json::Array{inventory_entry})}, {"leafId", Json("entry-1")}});
     Conversation admitted(result->inspection.protocol_state);
-    require(admitted.start(idle).stdin_bytes.has_value(), "All requested task actions must unlock the delegated prompt");
+    admitted.start(idle);
+    require(json::text(parse(*admitted.send(response("lg-tools", "get_entries", inventory)).stdin_bytes), "type") == "prompt",
+        "Enabled MCP actions mounted under xd must unlock the prompt with no top-level schemas");
+    admitted.send(response("lg-prompt", "prompt"));
+    auto substituted = assistant("wrong model");
+    substituted.find("message")->set("model", Json("fallback-model"));
+    require(admitted.send(substituted).failure_reason == "model_selection_unavailable",
+        "Later assistant messages must retain the selected native provider and model");
+
+    for (const auto& change : {
+        parse(R"({"type":"retry_fallback_applied","from":"test/exact-model","to":"test/fallback-model","role":"default"})"),
+        parse(R"({"type":"thinking_level_changed","thinkingLevel":"medium"})")})
+    {
+        Conversation changed(result->inspection.protocol_state);
+        changed.start(idle);
+        changed.send(response("lg-tools", "get_entries", inventory));
+        require(changed.send(change).failure_reason == "model_selection_unavailable",
+            "Native fallback or thinking changes must fail an explicit task selection");
+    }
+    auto unrelated_entry = inventory_entry;
+    unrelated_entry.find("data")->set("scope", Json("unrelated-task"));
+    Conversation stale(result->inspection.protocol_state);
+    stale.start(idle);
+    require(stale.send(response("lg-tools", "get_entries", json::object({{"entries", Json(Json::Array{unrelated_entry})}}))).failure_reason ==
+        "task_control_unavailable", "An unrelated or stale task inventory must not establish readiness");
+    auto duplicate = inventory;
+    duplicate.find("entries")->push_back(inventory_entry);
+    Conversation ambiguous(result->inspection.protocol_state);
+    ambiguous.start(idle);
+    require(ambiguous.send(response("lg-tools", "get_entries", duplicate)).failure_reason == "task_control_unavailable",
+        "Duplicate task inventory records must not be accepted ambiguously");
     idle.set("thinkingLevel", Json("medium"));
     Conversation clamped(result->inspection.protocol_state);
     require(clamped.start(idle).failure_reason == "model_selection_unavailable", "Silent native thinking-level clamping must not be acknowledged");
+
+    request.model_selection.reset();
+    const auto inherited = omp::prepare_delegated_session(request, &failure);
+    require(inherited && inherited->private_artifacts.size() == 3,
+        "Omitted selection must leave the user's native retry and context-promotion defaults intact");
 
     request.control.connection.reset();
     require(!omp::prepare_delegated_session(request, &failure), "Delegation must not launch original servers without a host relay");
@@ -480,6 +568,7 @@ int main(int argc, char** argv)
         }
         Temporary_directory directory(argv[0]);
         preparation_contract(directory);
+        ambient_profile_contract(directory);
         const auto request = request_for(directory);
         completion_contract(request);
         failure_contract(request);

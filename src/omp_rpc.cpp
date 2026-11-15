@@ -36,6 +36,7 @@ enum class Phase
     NEGOTIATING,
     FILTERING,
     CHECKING,
+    CATALOG,
     RUNNING,
     DRAINING,
 };
@@ -44,7 +45,8 @@ struct Rpc_state
 {
     Phase                    phase = Phase::READY;
     std::string              prompt;
-    std::vector<std::string> expected_tools;
+    Json                     expected_tools = Json::array();
+    std::string              tool_scope;
     std::string              selected_model;
     std::string              selected_effort;
     std::string              pending;
@@ -109,8 +111,8 @@ Json strings(const std::vector<std::string>& values)
 std::string save_state(const Rpc_state& state)
 {
     return addon::serialize_json(json::object({
-        {"version", Json(1)}, {"phase", Json(static_cast<int>(state.phase))},
-        {"prompt", Json(state.prompt)}, {"expected_tools", strings(state.expected_tools)},
+        {"version", Json(2)}, {"phase", Json(static_cast<int>(state.phase))},
+        {"prompt", Json(state.prompt)}, {"expected_tools", state.expected_tools}, {"tool_scope", Json(state.tool_scope)},
         {"selected_model", Json(state.selected_model)}, {"selected_effort", Json(state.selected_effort)},
         {"pending", Json(addon::encode_base64(state.pending))}, {"output", Json(state.output)},
         {"stderr", Json(addon::encode_base64(state.stderr_tail))},
@@ -132,15 +134,15 @@ bool integer_in(const Json& value, std::int64_t minimum, std::int64_t maximum)
 std::optional<Rpc_state> load_state(std::string_view bytes)
 {
     const auto value = addon::parse_exchange_protocol_state(bytes);
-    if (!value || !json::exact_keys(*value, {"version", "phase", "prompt", "expected_tools",
+    if (!value || !json::exact_keys(*value, {"version", "phase", "prompt", "expected_tools", "tool_scope",
             "selected_model", "selected_effort", "pending", "output", "stderr", "chunk_id", "chunk",
             "chunk_count", "chunk_next", "chunk_length", "frame_limit", "acknowledged", "completed", "settled"}) ||
-        json::member(*value, "version") != Json(1) ||
+        json::member(*value, "version") != Json(2) ||
         !integer_in(json::member(*value, "phase"), 0, static_cast<int>(Phase::DRAINING)))
     {
         return std::nullopt;
     }
-    for (const auto key : {"prompt", "selected_model", "selected_effort", "pending", "output", "stderr", "chunk_id", "chunk"}) {
+    for (const auto key : {"prompt", "tool_scope", "selected_model", "selected_effort", "pending", "output", "stderr", "chunk_id", "chunk"}) {
         if (!json::member(*value, key).is_string()) {
             return std::nullopt;
         }
@@ -166,11 +168,15 @@ std::optional<Rpc_state> load_state(std::string_view bytes)
     }
     Rpc_state state;
     for (const auto& tool : tools.as_array()) {
-        if (!json::bounded_string(tool, 64)) {
+        if (!json::exact_keys(tool, {"server", "action"}) ||
+            !json::bounded_string(json::member(tool, "server"), 128) ||
+            !json::bounded_string(json::member(tool, "action"), 64))
+        {
             return std::nullopt;
         }
-        state.expected_tools.push_back(tool.as_string());
     }
+    state.expected_tools = tools;
+    state.tool_scope = json::text(*value, "tool_scope");
     auto pending = addon::decode_base64(json::text(*value, "pending"));
     auto chunk = addon::decode_base64(json::text(*value, "chunk"));
     auto errors = addon::decode_base64(json::text(*value, "stderr"));
@@ -198,7 +204,8 @@ std::optional<Rpc_state> load_state(std::string_view bytes)
     if (state.prompt.size() > addon::limits::k_max_structured_prompt_bytes || state.output.size() > k_result_bytes ||
         state.selected_model.size() > addon::limits::k_max_delegated_model_bytes ||
         state.selected_effort.size() > addon::limits::k_max_delegated_reasoning_effort_bytes ||
-        state.chunk_id.size() > 128 || state.pending.size() >= state.frame_limit ||
+        state.chunk_id.size() > 128 || state.tool_scope.size() > 64 || state.pending.size() >= state.frame_limit ||
+        (state.expected_tools.as_array().empty() != state.tool_scope.empty()) ||
         (state.chunk_id.empty() && (state.chunk_count || state.chunk_next || state.chunk_length || !state.chunk.empty())) ||
         (!state.chunk_id.empty() && (state.chunk_count < 2 || state.chunk_next == 0 ||
             state.chunk_next >= state.chunk_count || state.chunk_length < k_frame_bytes ||
@@ -245,22 +252,58 @@ bool exact_selection(const Rpc_state& state, const Json& native)
 
 bool tools_available(const Rpc_state& state, const Json& native)
 {
-    if (state.expected_tools.empty()) {
-        return true;
-    }
-    const auto& tools = json::member(native, "dumpTools");
-    if (!tools.is_array()) {
+    const auto& entries = json::member(native, "entries");
+    if (!entries.is_array()) {
         return false;
     }
-    for (const auto& expected : state.expected_tools) {
-        if (std::count_if(tools.as_array().begin(), tools.as_array().end(), [&](const auto& tool) {
-                return json::text(tool, "name") == expected;
+    const Json* inventory = nullptr;
+    for (const auto& entry : entries.as_array()) {
+        if (json::text(entry, "type") != "custom" || json::text(entry, "customType") != "logonomic-task-control") {
+            continue;
+        }
+        const auto& data = json::member(entry, "data");
+        if (json::text(data, "scope") != state.tool_scope) {
+            continue;
+        }
+        if (inventory || json::member(data, "version") != Json(1) || !json::member(data, "tools").is_array()) {
+            return false;
+        }
+        inventory = &json::member(data, "tools");
+    }
+    if (!inventory) {
+        return false;
+    }
+    std::vector<std::string> names;
+    for (const auto& expected : state.expected_tools.as_array()) {
+        const auto& tools = inventory->as_array();
+        if (std::count_if(tools.begin(), tools.end(), [&](const auto& tool) {
+                return json::member(tool, "server") == json::member(expected, "server") &&
+                    json::member(tool, "action") == json::member(expected, "action");
             }) != 1)
         {
             return false;
         }
+        const auto found = std::find_if(tools.begin(), tools.end(), [&](const auto& tool) {
+            return json::member(tool, "server") == json::member(expected, "server") &&
+                json::member(tool, "action") == json::member(expected, "action");
+        });
+        const auto name = json::text(*found, "name");
+        if (!json::bounded_string(json::member(*found, "name"), 64) ||
+            std::find(names.begin(), names.end(), name) != names.end())
+        {
+            return false;
+        }
+        names.push_back(name);
     }
     return true;
+}
+
+void submit_prompt(Rpc_state& state, std::string& input, addon::Structured_inspect_result& result)
+{
+    input += command("lg-prompt", "prompt", json::object({{"message", Json(state.prompt)}}));
+    state.prompt.clear();
+    state.phase = Phase::RUNNING;
+    presented(result, addon::Presentation_event_kind::REVIEW_INITIALIZED);
 }
 
 std::optional<addon::Structured_inspect_result> consume_frame(
@@ -307,6 +350,7 @@ std::optional<addon::Structured_inspect_result> consume_frame(
             case Phase::NEGOTIATING: expected_id = "lg-protocol"; expected_command = "negotiate_protocol"; break;
             case Phase::FILTERING: expected_id = "lg-filter"; expected_command = "set_event_filter"; break;
             case Phase::CHECKING: expected_id = "lg-state"; expected_command = "get_state"; break;
+            case Phase::CATALOG: expected_id = "lg-tools"; expected_command = "get_entries"; break;
             case Phase::RUNNING:
             case Phase::DRAINING: expected_id = "lg-prompt"; expected_command = "prompt"; break;
             case Phase::READY: break;
@@ -326,7 +370,8 @@ std::optional<addon::Structured_inspect_result> consume_frame(
             }
             input += command("lg-filter", "set_event_filter", json::object({
                 {"events", strings({"message_update", "message_end", "tool_execution_end", "agent_end",
-                    "auto_retry_start", "auto_retry_end"})}, {"messageUpdates", Json("delta")},
+                    "auto_retry_start", "auto_retry_end", "retry_fallback_applied", "thinking_level_changed"})},
+                {"messageUpdates", Json("delta")},
             }));
             state.phase = Phase::FILTERING;
         }
@@ -344,16 +389,27 @@ std::optional<addon::Structured_inspect_result> consume_frame(
             {
                 return failed("omp_session_not_idle", "OMP did not confirm a settled session before accepting the task.");
             }
-            if (!tools_available(state, data)) {
-                return failed("task_control_unavailable", "OMP's active tool catalog does not contain every requested task-control action.", "native_error");
-            }
             if (!exact_selection(state, data)) {
                 return failed("model_selection_unavailable", "OMP did not retain the exact requested model and thinking level.", "native_error");
             }
-            input += command("lg-prompt", "prompt", json::object({{"message", Json(state.prompt)}}));
-            state.prompt.clear();
-            state.phase = Phase::RUNNING;
-            presented(result, addon::Presentation_event_kind::REVIEW_INITIALIZED);
+            if (!state.selected_model.empty()) {
+                const auto& model = json::member(data, "model");
+                state.selected_model = json::text(model, "provider") + "/" + json::text(model, "id");
+            }
+            if (state.expected_tools.as_array().empty()) {
+                submit_prompt(state, input, result);
+            }
+            else {
+                input += command("lg-tools", "get_entries");
+                state.phase = Phase::CATALOG;
+            }
+        }
+        else
+        if (state.phase == Phase::CATALOG) {
+            if (!tools_available(state, data)) {
+                return failed("task_control_unavailable", "OMP did not confirm every requested task-server action in this task's enabled tool inventory.", "native_error");
+            }
+            submit_prompt(state, input, result);
         }
         else {
             if (state.acknowledged) {
@@ -397,10 +453,23 @@ std::optional<addon::Structured_inspect_result> consume_frame(
     if (state.phase != Phase::RUNNING && state.phase != Phase::DRAINING) {
         return std::nullopt;
     }
+    if (type == "retry_fallback_applied" && (!state.selected_model.empty() || !state.selected_effort.empty())) {
+        return failed("model_selection_unavailable", "OMP attempted model fallback despite the task's explicit selection.", "native_error");
+    }
+    if (type == "thinking_level_changed" && !state.selected_effort.empty() &&
+        json::text(frame, "thinkingLevel") != state.selected_effort)
+    {
+        return failed("model_selection_unavailable", "OMP changed the task's explicitly selected thinking level.", "native_error");
+    }
     if (type == "message_end") {
         const auto& message = json::member(frame, "message");
         if (json::text(message, "role") != "assistant") {
             return std::nullopt;
+        }
+        if (!state.selected_model.empty() &&
+            json::text(message, "provider") + "/" + json::text(message, "model") != state.selected_model)
+        {
+            return failed("model_selection_unavailable", "OMP produced a task message using a different model.", "native_error");
         }
         const auto stop = json::text(message, "stopReason");
         if (stop == "error" || stop == "aborted") {
@@ -461,7 +530,7 @@ std::optional<addon::Structured_inspect_result> consume_frame(
 
 // Only the native options whose token arity is known can be preserved without
 // accidentally turning a launcher message or command into an extra task.
-bool session_arguments(const std::vector<std::string>& arguments)
+bool session_arguments(const std::vector<std::string>& arguments, bool* trusted_extensions = nullptr)
 {
     constexpr std::string_view valued[] = {
         "--profile", "--provider", "--model", "--config", "--add-dir", "--smol", "--slow", "--plan",
@@ -481,6 +550,9 @@ bool session_arguments(const std::vector<std::string>& arguments)
         const auto equals = argument.starts_with("--") ? argument.find('=') : std::string::npos;
         const std::string_view name(argument.data(), equals == std::string::npos ? argument.size() : equals);
         if (std::find(std::begin(valued), std::end(valued), name) != std::end(valued)) {
+            if (trusted_extensions && name == "--trusted-extension") {
+                *trusted_extensions = true;
+            }
             if (equals == std::string::npos && ++index == arguments.size()) {
                 return false;
             }
@@ -541,23 +613,23 @@ std::optional<addon::Process_proposal> prepare_process(
     return process;
 }
 
-std::string mcp_name_part(std::string_view name)
+std::string inventory_extension(const Rpc_state& state)
 {
-    std::string result;
-    for (const unsigned char byte : name) {
-        const char lower = byte >= 'A' && byte <= 'Z' ? static_cast<char>(byte + 'a' - 'A') : static_cast<char>(byte);
-        if ((lower >= 'a' && lower <= 'z') || (lower >= '0' && lower <= '9')) {
-            result += lower;
-        }
-        else
-        if (!result.empty() && result.back() != '_') {
-            result += '_';
-        }
-    }
-    if (!result.empty() && result.back() == '_') {
-        result.pop_back();
-    }
-    return result;
+    // Native extension getActiveTools() is the enabled union, including xd://
+    // devices (modes/runtime-init.ts). MCP provenance is supplied by
+    // getAllTools(); names are never inferred from prompt prose or a hash.
+    return "const expected = " + addon::serialize_json(state.expected_tools) + ";\n" +
+        "const scope = " + addon::serialize_json(Json(state.tool_scope)) + ";\n" + R"(export default function (pi) {
+    pi.on("session_start", (_event, ctx) => {
+        if (ctx.agent.kind !== "main") return;
+        const enabled = new Set(pi.getActiveTools());
+        const tools = pi.getAllTools().filter(tool => enabled.has(tool.name) &&
+            expected.some(wanted => wanted.server === tool.mcpServerName && wanted.action === tool.mcpToolName))
+            .map(tool => ({name: tool.name, server: tool.mcpServerName, action: tool.mcpToolName}));
+        pi.appendEntry("logonomic-task-control", {version: 1, scope, tools});
+    });
+}
+)";
 }
 
 } // namespace
@@ -592,7 +664,7 @@ std::optional<addon::Delegated_prepare_result> prepare_delegated_session(
     }
     const auto& connection = *request.control.connection;
     for (const auto& path : {connection.relay_program, connection.descriptor_path}) {
-        if (path.find("${PLUGIN_ROOT}") != std::string::npos || path.find("${PLUGIN_DATA}") != std::string::npos) {
+        if (path.find("${CLAUDE_PLUGIN_ROOT}") != std::string::npos || path.find("${OMP_PLUGIN_ROOT}") != std::string::npos) {
             reject(failure, "task_control_unavailable", "The relay path contains an OMP plugin substitution token.");
             return std::nullopt;
         }
@@ -615,29 +687,14 @@ std::optional<addon::Delegated_prepare_result> prepare_delegated_session(
         }
     }
     const auto plugin_name = "lgo-" + addon::to_hex(addon::Sha256::digest(request.control.task_id)).substr(0, 12);
+    state.tool_scope = plugin_name;
     auto servers = Json::object();
     addon::Delegated_prepare_result result;
     for (std::size_t index = 0; index < request.control.servers.size(); ++index) {
         const auto& server = request.control.servers[index];
         const auto alias = "s" + std::to_string(index);
-        const auto native_server = mcp_name_part(plugin_name + ":" + alias);
         for (const auto& action : server.actions) {
-            auto name = mcp_name_part(action);
-            if (name.empty()) {
-                name = "tool";
-            }
-            const auto prefix = native_server + "_";
-            if (name.starts_with(prefix)) {
-                name.erase(0, prefix.size());
-            }
-            name = "mcp__" + native_server + "_" + name;
-            // Native names over 64 bytes use a Bun-specific hash. Refusing
-            // those names avoids guessing which tool the model can call.
-            if (name.size() > 64 || std::find(state.expected_tools.begin(), state.expected_tools.end(), name) != state.expected_tools.end()) {
-                reject(failure, "task_control_unavailable", "Task-control actions collide or exceed OMP's native tool-name bound.");
-                return std::nullopt;
-            }
-            state.expected_tools.push_back(std::move(name));
+            state.expected_tools.push_back(json::object({{"server", Json(plugin_name + ":" + alias)}, {"action", Json(action)}}));
         }
         servers.set(alias, json::object({
             {"type", Json("stdio")}, {"command", Json(connection.relay_program)},
@@ -645,18 +702,30 @@ std::optional<addon::Delegated_prepare_result> prepare_delegated_session(
         }));
         result.acknowledgment.server_ids.push_back(server.server_id);
     }
-    const auto manifest = json::object({
-        {"$schema", Json("https://agent-plugins.org/schemas/1.0.0/plugin.schema.json")},
-        {"name", Json(plugin_name)},
-    });
-    const auto mcp = json::object({
-        {"$schema", Json("https://agent-plugins.org/schemas/1.0.0/mcp.schema.json")},
-        {"mcpServers", std::move(servers)},
-    });
+    // OMP's documented Claude-plugin layout accepts an absolute executable.
+    // Portable Agent Plugins deliberately restrict commands to bare names or
+    // contained relative files and cannot represent this host-owned relay.
+    const auto manifest = json::object({{"name", Json(plugin_name)}});
+    const auto mcp = json::object({{"mcpServers", std::move(servers)}});
     result.private_artifacts = {
-        {"plugin.json", addon::serialize_json(manifest)}, {"mcp.json", addon::serialize_json(mcp)},
+        {".claude-plugin/plugin.json", addon::serialize_json(manifest)}, {".mcp.json", addon::serialize_json(mcp)},
+        {"task-control.ts", inventory_extension(state)},
     };
     process->argv.insert(process->argv.end(), {"--plugin-dir", request.control.private_artifact_root});
+    const auto root = addon::path_from_utf8(request.control.private_artifact_root);
+    const auto launcher = recognize_launcher(request.context.launcher, request.context.launch_environment->platform_id,
+        request.context.launcher_argv);
+    bool trusted_extensions = false;
+    session_arguments(launcher->arguments, &trusted_extensions);
+    process->argv.insert(process->argv.end(), {trusted_extensions ? "--trusted-extension" : "--extension",
+        addon::path_to_utf8(root / "task-control.ts")});
+    if (request.model_selection) {
+        result.private_artifacts.push_back({"selection.yml", addon::serialize_json(json::object({
+            {"retry", json::object({{"modelFallback", Json(false)}})},
+            {"contextPromotion", json::object({{"enabled", Json(false)}})},
+        }))});
+        process->argv.insert(process->argv.end(), {"--config", addon::path_to_utf8(root / "selection.yml")});
+    }
     if (!addon::validate_structured_process_proposal(*process, failure)) {
         return std::nullopt;
     }

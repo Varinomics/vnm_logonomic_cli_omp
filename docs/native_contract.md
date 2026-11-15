@@ -56,7 +56,7 @@ and the extension-loading path in
 | `session_branch`, `session_tree` | New activation | Context rewinds cannot reuse the previous activation's model context or child state. |
 | `session_shutdown` | Session ended | Only for the root binding; never claims successful work. |
 | `agent_start` | Confirmed working phase | Creates a provider turn id. Automatic continuation retains that id. |
-| Terminal `agent_end` | Confirmed awaiting-input phase | Requires the native emitter's own `willContinue` field with value undefined/false and the native context currently idle. |
+| Terminal `agent_end` | Confirmed awaiting-input phase | Requires the native emitter's own `willContinue` field with value undefined/false. The callback can precede prompt unwinding. |
 | Terminal assistant `stopReason: stop` | Confirmed success | `error` means failed; `aborted` means interrupted. Length/tool-use/unknown endings do not establish successful work. |
 | `session_stop` | No observation | This is an awaited veto/continuation gate. Returning from the gate is not completion. |
 | `tool_approval_requested` and `tool_approval_resolved` | Paired confirmed permission attention | Exact native session id and tool-call id. A rejected approval still resolves the wait. |
@@ -88,6 +88,14 @@ degradation instead of inferring a successful finish. An extension context
 without `agent.kind` cannot establish a root activation. These checks avoid
 rejecting a compatible release merely because it is older than the inspected
 source version.
+
+Native `ctx.isIdle()` is not a terminal-event condition. Its underlying
+`isStreaming` getter includes the owning prompt's in-flight counter, which
+can remain nonzero during the single terminal extension notification. Native
+execution confirmed `willContinue: undefined` together with `isIdle(): false`
+on that callback. Completion follows the native continuation decision without
+waiting for a second notification or a timer. The next user prompt receives
+a new provider turn id.
 
 These mappings follow
 [`shared-events.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/extensibility/shared-events.ts),
@@ -152,7 +160,7 @@ and the continuation/ownership handling in
 ## Structured and delegated RPC
 
 The RPC implementation negotiates protocol v2 after native readiness,
-disables streamed deltas, inspects native state, and submits the exact prompt
+selects delta message updates, inspects native state, and submits the exact prompt
 only after negotiation. Completion requires native prompt-result and settled
 state evidence; partial assistant text and a bare process exit do not prove
 success. The SDK's launch bridge retains attached process custody and the
@@ -163,3 +171,74 @@ instead of silently substituting a different level. See `omp_rpc_tests` and
 the public
 [`docs/rpc.md`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/docs/rpc.md)
 for readiness, terminal, error and model-catalog fixture contracts.
+
+Delegation uses OMP's supported `.claude-plugin/plugin.json` and `.mcp.json`
+layout through `--plugin-dir`. This native plugin format accepts the host's
+absolute relay executable; the portable Agent Plugins `mcp.json` format
+restricts commands to bare names or contained relative paths and cannot
+represent that relay. The host writes the files beneath its supplied task
+root. Every server launches the host relay with the exact descriptor path
+and original server id. Original server executables and credentials are not
+copied. The contracts are
+[`claude-plugins.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/discovery/claude-plugins.ts),
+[`substitute-plugin-root.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/discovery/substitute-plugin-root.ts),
+and the distinct restrictions in
+[`agent-plugin-format.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/discovery/agent-plugin-format.ts).
+
+OMP enables `tools.xdev` by default, so many callable MCP tools are mounted
+under `xd://` and absent from `get_state.dumpTools`. A task-local extension
+records enabled MCP metadata at native `session_start`: `getActiveTools()`
+provides the union of top-level and mounted tool names, while `getAllTools()`
+provides the original MCP server and action identities. The extension uses
+`appendEntry`, which adds no model prompt. RPC `get_entries` must return one
+inventory record for this task's scope containing every requested server and
+action before the task prompt is sent. Unrelated or duplicate inventories
+cannot establish readiness. This preserves the user's tool exposure and
+approval settings. The native bindings are in
+[`runtime-init.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/modes/runtime-init.ts),
+[`session-tools.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-tools.ts),
+and
+[`extensions/types.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/extensibility/extensions/types.ts).
+
+An explicit delegated model or reasoning selection adds a task-local
+`--config` overlay disabling `retry.modelFallback` and
+`contextPromotion.enabled`. Same-model retry settings remain unchanged.
+Startup identity, assistant-message provider/model identity, fallback events,
+and thinking-level changes are checked against the selected values. Omitted
+selection adds no such overlay and preserves native recovery defaults. These
+native replacement paths are defined by
+[`turn-recovery.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/turn-recovery.ts)
+and
+[`context-settings.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/context-settings.ts).
+
+The finite ambient declarations preserve `OMP_PROFILE`, `PI_PROFILE`,
+`PI_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, and the XDG state/cache selectors;
+the SDK already supplies its home/PATH/XDG data/config baseline. Empty values
+are retained, including an empty `OMP_PROFILE` that intentionally overrides
+`PI_PROFILE`. The session declarations use the SDK's 32-name allowance for
+these selectors, common provider credentials and endpoint selectors, and
+HTTP proxy settings. Additional native provider variables must be selected
+explicitly in the saved launcher's environment; they then pass through the
+SDK's frozen effective environment. Native saved authentication and profile
+files continue to use the selected native directories. See
+[`dirs.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/utils/src/dirs.ts)
+and the package capability sidecars for the precise names.
+
+Settlement waits for owner-scoped background work whose delivery can still
+wake the session. OMP excludes suppressed, acknowledged, or watched job
+deliveries from that predicate. An unsuppressed persistent server can remain
+unsettled until the original host deadline or cancellation; the add-on does
+not infer success from silence or suppress required work. Stdin closure is
+followed by final output and exit validation. The native predicate is in
+[`session-settle.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-settle.ts)
+and `hasPendingAsyncWork()` in `agent-session.ts`.
+
+Windows structured sessions support the native `omp.exe` installed by OMP's
+default official
+[`install.ps1`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/scripts/install.ps1).
+The SDK's native launch bridge owns Unicode path/argument transport and
+attached process lifetime. Arbitrary npm `.cmd` and PowerShell `.ps1`
+wrappers remain unavailable for structured replacement; the add-on does not
+guess a Bun executable or reinterpret those scripts. Source review and
+portable contract fixtures do not establish execution on Windows; native
+acceptance evidence must identify the platform on which it ran.
