@@ -20,7 +20,11 @@ function harness(transport) {
         sessionManager: { getSessionId: () => state.id, getSessionFile: () => state.file },
         isIdle: () => state.idle };
     return { handlers, channels, delivered, state, ctx,
-        emit: async (name, event = {}, context = ctx) => await handlers.get(name)?.({ type: name, ...event }, context),
+        emit: async (name, event = {}, context = ctx) => {
+            const result = await handlers.get(name)?.({ type: name, ...event }, context);
+            await new Promise(resolve => setImmediate(resolve));
+            return result;
+        },
         child: event => channels.get("task:subagent:lifecycle")?.(event),
         drain: () => new Promise(resolve => setImmediate(resolve)) };
 }
@@ -37,17 +41,23 @@ assert.equal(h.delivered.length, 1, "even depth-zero child bindings cannot creat
 
 await h.emit("agent_start");
 const turn = h.delivered.at(-1).body.turn_id;
+h.state.idle = false; // Actual callbacks precede the owning prompt's unwind.
 await h.emit("agent_end", { willContinue: true, messages: [{ role: "assistant", stopReason: "stop" }] });
 assert.equal(h.delivered.at(-1).name, "agent_start", "continuations retain busy state");
 await h.emit("agent_start");
 assert.equal(h.delivered.at(-1).body.turn_id, turn);
-h.state.idle = false;
 await h.emit("agent_end", { willContinue: undefined, messages: [{ role: "assistant", stopReason: "stop" }] });
-assert.equal(h.delivered.at(-1).name, "agent_start", "a late settle cannot finish a newer streaming run");
-h.state.idle = true;
-await h.emit("agent_end", { willContinue: undefined, messages: [{ role: "assistant", stopReason: "aborted" }] });
+assert.equal(h.delivered.at(-1).name, "agent_end", "the single native terminal notification survives prompt unwinding");
+assert.equal(h.delivered.at(-1).body.turn_id, turn);
+assert.equal(h.delivered.at(-1).body.stop_reason, "stop");
+assert.equal(h.delivered.filter(request => request.name === "agent_end").length, 1);
+await h.emit("agent_start");
+const nextTurn = h.delivered.at(-1).body.turn_id;
+assert.notEqual(nextTurn, turn, "a completed turn id cannot bleed into the next user prompt");
+await h.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "aborted" }] });
 assert.equal(h.delivered.at(-1).body.stop_reason, "aborted");
-assert.equal(h.delivered.at(-1).body.terminal, true, "undefined native willContinue has documented terminal semantics");
+assert.equal(h.delivered.at(-1).body.turn_id, nextTurn);
+assert.equal(h.delivered.at(-1).body.terminal, true, "false native willContinue retains terminal semantics while unwinding");
 
 await h.emit("tool_approval_requested", { sessionId: "session-A", toolCallId: "approve-1", toolName: "bash" });
 await h.emit("tool_approval_resolved", { sessionId: "session-A", toolCallId: "approve-1", approved: false });
@@ -129,5 +139,41 @@ await unknownSemantics.emit("agent_start");
 await unknownSemantics.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
 assert.equal(unknownSemantics.delivered.at(-1).name, "logonomic_observation_lost",
     "an older event shape without native continuation evidence must never imply successful completion");
+
+let releaseStart;
+let startAborted = false;
+const closing = harness((request, signal) => request.name === "agent_start" ?
+    new Promise(resolve => {
+        releaseStart = resolve;
+        signal.addEventListener("abort", () => { startAborted = true; resolve(undefined); }, { once: true });
+    }) : { committed: true, accepted: true });
+await closing.emit("session_start");
+await closing.emit("agent_start");
+closing.state.idle = false;
+await closing.emit("agent_end", { willContinue: undefined, messages: [{ role: "assistant", stopReason: "stop" }] });
+const shutdown = closing.emit("session_shutdown");
+await closing.drain();
+assert.equal(startAborted, false, "normal shutdown must not cancel an already captured lifecycle delivery");
+releaseStart({ committed: true, accepted: true });
+await shutdown;
+assert.deepEqual(closing.delivered.map(request => request.name),
+    ["session_start", "agent_start", "agent_end", "session_shutdown"],
+    "fire-and-forget native terminal notification drains before session shutdown under immediate EOF");
+assert.equal(closing.delivered[1].body.turn_id, closing.delivered[2].body.turn_id);
+
+let cancelledStall = false;
+const stalled = harness((request, signal) => request.name === "agent_start" ?
+    new Promise(resolve => signal.addEventListener("abort", () => {
+        cancelledStall = true;
+        resolve(undefined);
+    }, { once: true })) : { committed: true, accepted: true });
+await stalled.emit("session_start");
+await stalled.emit("agent_start");
+await stalled.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "stop" }] });
+await stalled.emit("session_shutdown");
+assert.equal(cancelledStall, true, "the bounded shutdown drain cancels a helper that does not settle");
+assert.deepEqual(stalled.delivered.map(request => request.name),
+    ["session_start", "agent_start", "logonomic_observation_lost"],
+    "shutdown budget exhaustion reports observation loss without fabricating completion");
 
 console.log("PASS native extension event, activation, attention, child, context and delivery-loss fixtures");

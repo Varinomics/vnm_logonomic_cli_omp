@@ -71,7 +71,9 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     let pending = Promise.resolve();
     let queued = 0;
     let shuttingDown = false;
+    let shutdownDrainExpired = false;
     let running: AbortController | undefined;
+    let contextRequest: AbortController | undefined;
     const children = new Map<string, { owner: Activation; sessionFile: unknown }>();
     const attention = new Map<string, Activation>();
 
@@ -89,7 +91,8 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         if (++queued > 64) owner.lost = true;
         const work = pending.then(async () => {
             --queued;
-            if (owner !== activation || owner.lossReported || (shuttingDown && name !== "session_shutdown")) return;
+            if (owner !== activation || owner.lossReported ||
+                (shutdownDrainExpired && name !== "session_shutdown")) return;
             const controller = new AbortController();
             running = controller;
             try {
@@ -132,7 +135,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         if (owner !== activation || owner.lost || shuttingDown) return;
         if (!owner.pendingContext) {
             const controller = new AbortController();
-            running = controller;
+            contextRequest = controller;
             try {
                 const reply = await transport({ operation: "context", name: "before_agent_start",
                     body: { session_id: owner.sessionId, activation_nonce: owner.nonce } }, controller.signal);
@@ -140,7 +143,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                     owner.pendingContext = reply.instruction;
                 }
             } catch { /* A context refusal never vetoes the native prompt. */ }
-            finally { if (running === controller) running = undefined; }
+            finally { if (contextRequest === controller) contextRequest = undefined; }
         }
         if (owner === activation && !shuttingDown && owner.pendingContext) {
             // Repeated native preparation attempts retain accepted context
@@ -149,44 +152,49 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         }
     });
 
-    pi.on("agent_start", async (_event, ctx) => {
+    pi.on("agent_start", (_event, ctx) => {
         const owner = current(ctx);
         if (!owner) return;
         owner.pendingContext = "";
         // Automatic continuations remain one busy root turn.
         if (!owner.turnId) owner.turnId = freshId();
-        await send(owner, "agent_start");
+        // Capture and queue observations synchronously. Holding the native
+        // extension delivery turn on helper I/O can hide its fire-and-forget
+        // agent_end behind a concurrent session_shutdown callback.
+        void send(owner, "agent_start");
     });
-    pi.on("agent_end", async (event, ctx) => {
+    pi.on("agent_end", (event, ctx) => {
         const owner = current(ctx);
         if (!owner?.turnId) return;
         if (!Object.hasOwn(event, "willContinue")) {
             // The verified native emitter includes this field even when its
             // value is undefined. Missing semantic evidence is not success.
             owner.lost = true;
-            await send(owner, "logonomic_observation_lost");
+            void send(owner, "logonomic_observation_lost");
             return;
         }
-        if (!ctx.isIdle() || event.willContinue === true ||
+        if (event.willContinue === true ||
             (event.willContinue !== undefined && event.willContinue !== false)) return;
         // The native contract treats undefined/false willContinue as terminal.
+        // ctx.isIdle() can still be false while the owning prompt unwinds;
+        // this notification is not repeated when that counter reaches zero.
         // session_stop is a veto gate and is deliberately never observed here.
         const last = [...event.messages].reverse().find(message => message.role === "assistant");
         const reason = last && "stopReason" in last && typeof last.stopReason === "string" ? last.stopReason : "";
-        await send(owner, "agent_end", { terminal: true, stop_reason: reason });
+        void send(owner, "agent_end", { terminal: true, stop_reason: reason });
         owner.turnId = "";
     });
 
-    const requestAttention = async (name: string, id: string, ctx: ExtensionContext) => {
+    const requestAttention = (name: string, id: string, ctx: ExtensionContext) => {
         const owner = current(ctx);
         if (!owner || !identity(id)) return;
         attention.set(id, owner);
-        await send(owner, name, { request_id: id });
+        void send(owner, name, { request_id: id });
     };
-    const resolveAttention = async (name: string, id: string, ctx: ExtensionContext) => {
+    const resolveAttention = (name: string, id: string, ctx: ExtensionContext) => {
         const owner = attention.get(id);
         attention.delete(id);
-        if (owner && owner === current(ctx)) await send(owner, name, { request_id: id });
+        if (owner && owner === current(ctx)) void send(owner, name, { request_id: id });
     };
     pi.on("tool_approval_requested", (event, ctx) => {
         if (event.sessionId === ctx.sessionManager.getSessionId())
@@ -236,8 +244,23 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const owner = current(ctx);
         shuttingDown = true;
         unsubscribe();
-        running?.abort();
-        await pending;
+        contextRequest?.abort();
+        // Native shutdown awaits handlers for at most 2000 ms. Give already
+        // captured facts one helper-sized drain window, then reserve time for
+        // wrapper retirement and the final shutdown/degradation delivery.
+        // This bounds teardown; it never supplies terminal-event evidence.
+        const deadline = setTimeout(() => {
+            shutdownDrainExpired = true;
+            if (owner) owner.lost = true;
+            running?.abort();
+        }, 750);
+        try {
+            for (;;) {
+                const tail = pending;
+                await tail;
+                if (pending === tail) break;
+            }
+        } finally { clearTimeout(deadline); }
         if (owner) await send(owner, "session_shutdown");
         activation = undefined;
         children.clear();

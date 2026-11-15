@@ -27,7 +27,7 @@ remains an allowlist when the package module is added.
 |---|---|
 | Launcher discovery and preparation | Frozen-environment `omp` discovery, literal launcher recognition, preserved native arguments and a custodied extension asset. |
 | Root session lifecycle | Native session load, successful switch, clear, branch/tree change and shutdown. Each activation has separate correlation even when `/clear` keeps the native UUID. |
-| Root working and completion | Native agent-loop events with continuation and idle checks. Successful, failed and interrupted outcomes remain distinct. |
+| Root working and completion | Native agent-loop events and continuation decisions, including the terminal callback before prompt unwinding. Successful, failed and interrupted outcomes remain distinct. |
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
 | Direct subagents | Native task/eval child registry ids and start/stop events, kept separate from root completion. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |

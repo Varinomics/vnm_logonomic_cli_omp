@@ -135,6 +135,15 @@ shutdown-handler budget. There are no detached processes or PID-only helper
 kills. Telemetry contains bounded identities and status fields, not prompts,
 tool arguments, plan text, answers, credentials or assistant reasoning.
 
+Lifecycle notification handlers capture and enqueue their facts synchronously;
+they do not hold the native extension delivery queue while helper I/O runs.
+This matters because the native terminal callback is fire-and-forget and its
+shutdown callback bypasses that delivery queue. On shutdown, already captured
+facts drain in order for up to 750 ms, reserving the rest of the native
+two-second handler budget for cancellation/reaping and final delivery. An
+expired drain cancels the active helper through stdin EOF and reports
+observation loss. It never infers terminal completion from elapsed time.
+
 A delivery failure or queue overflow prevents later observations from
 pretending that the activation was fully observed. The next delivery reports
 SDK lifecycle degradation, and further lifecycle facts from that activation
