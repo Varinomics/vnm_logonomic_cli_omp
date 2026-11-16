@@ -230,6 +230,69 @@ void native_sources_and_copies(const char* executable)
     require(expanded.records.size() == 5 && total(expanded) == 135, "The native exact-file registry includes its nested child storage");
 }
 
+void exact_source_locators(const char* executable)
+{
+    for (const auto* name : {"work", "work.history", "caf\xc3\xa9.record"}) {
+        Fixture f(executable);
+        f.select_account();
+        const auto exact = f.root / "external" / addon::path_from_utf8(name);
+        write(exact, {header("exact"), assistant("exact001", 100)});
+        write(f.sources / "unlisted.history", {header("unlisted"), assistant("ignored1", 900)});
+        if (exact.has_extension())
+            write(exact.parent_path() / exact.stem() / "unrelated.jsonl", {header("unrelated"), assistant("ignored2", 700)});
+        const auto registry = f.home / ".omp/agent/custom-session-files";
+        fs::create_directories(registry);
+        std::ofstream(registry / "native-exact-path") << addon::path_to_utf8(exact);
+        const auto page = f.scan();
+        require(page.records.size() == 1 && total(page) == 100 && page.incomplete_historical_coverage,
+            "Native registry authority admits exact custom files without guessing adjacent child roots or arbitrary directory files");
+        write(exact, {json::object({{"type", Json("unrecognized")}})});
+        f.next();
+        require(f.invoke().reason == "usage_native_format_unsupported",
+            "An exact custom filename must receive the same native content validation as .jsonl");
+    }
+
+    Fixture f(executable);
+    const auto exact = f.root / "external/work";
+    write(exact, {header("explicit"), assistant("explicit", 100)});
+    const auto set_launcher = [&](const std::vector<std::string>& arguments) {
+        f.request.context.launcher_argv = arguments;
+        f.request.context.launcher.script_body.clear();
+        for (const auto& argument : arguments) {
+            if (!f.request.context.launcher.script_body.empty()) f.request.context.launcher.script_body += ' ';
+            f.request.context.launcher.script_body += '"' + argument + '"';
+        }
+    };
+    for (const auto& locator : {addon::path_to_utf8(exact), std::string("../external/work")}) {
+        set_launcher({"omp", "--session", locator});
+        f.next();
+        const auto page = f.scan();
+        require(page.records.size() == 1 && total(page) == 100,
+            "Absolute and relative explicit extensionless paths count the exact native source");
+    }
+    const auto custom = f.root / "external/custom.history";
+    write(custom, {header("custom"), assistant("custom01", 8)});
+    write(f.root / "external/custom/unrelated.jsonl", {header("unrelated"), assistant("ignored3", 900)});
+    set_launcher({"omp", "--session", "../external/custom.history"});
+    f.next();
+    require(total(f.scan()) == 8, "An explicit custom suffix does not authorize a stem-derived child crawl");
+    set_launcher({"omp", "--fork", "../external/work", "--session", "../external/custom.history"});
+    f.next();
+    require(total(f.scan()) == 100, "The exact native fork source takes precedence over the resume path");
+    for (const auto* selector : {"work", "8fc4094a-6aa6-440e-b478-a5b2de576c48"}) {
+        write(f.root / "workspace" / selector, {header("selector-looking"), assistant("ignored4", 900)});
+        set_launcher({"omp", "--session", selector});
+        f.next();
+        require(f.scan().records.empty(), "Existing files named like native selectors are not exact path authority");
+    }
+    const auto standard = f.root / "external/standard.jsonl";
+    write(standard, {header("standard"), assistant("standard", 10)});
+    write(f.root / "external/standard/child.jsonl", {header("child"), assistant("child001", 3)});
+    set_launcher({"omp", "--session", addon::path_to_utf8(standard)});
+    f.next();
+    require(total(f.scan()) == 13, "A public native .jsonl artifacts root remains discoverable for an exact source");
+}
+
 void discard_and_retention(const char* executable)
 {
     Fixture f(executable);
@@ -348,6 +411,8 @@ int main(int, char** argv)
     const char* group = "native sources and copies";
     try {
         native_sources_and_copies(argv[0]);
+        group = "exact native source locators";
+        exact_source_locators(argv[0]);
         group = "discard and retention";
         discard_and_retention(argv[0]);
         group = "dimensions and refusals";

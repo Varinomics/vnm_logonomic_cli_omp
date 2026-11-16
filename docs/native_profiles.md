@@ -45,6 +45,14 @@ launcher. It applies these source-established rules:
   directory does not inherit XDG routing.
 - `--session-dir` overrides `PI_CODING_AGENT_SESSION_DIR`. Both are retained by
   the resolver for native history consumers, without changing account identity.
+- Native resume/session/restore and fork operands supply an exact history file
+  only when they contain `/` or `\`, or end in `.jsonl`. Such files may be
+  extensionless or use another suffix. Bare names, IDs and prefixes stay opaque
+  selectors; the resolver does not search for same-named files. Relative paths
+  use the selected startup `--cwd`. Fork selection precedes resume selection,
+  and bare `--restore` preserves an already selected source. These are history
+  locators; native continuation/fork behavior still prevents an exact-resume
+  promise from a path alone.
 
 Native Bun/OMP dotenv loading can also change home, profile, agent, session or
 XDG paths after the host freezes its environment. The adapter does not implement
@@ -93,6 +101,9 @@ Source behavior is pinned to upstream OMP commit
   and `cli/flag-tables.ts`: profile extraction and native operand boundaries.
 - [`cli/args.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/cli/args.ts):
   the native ambient session-directory selector.
+- [`main.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/main.ts)
+  and `cli/startup-cwd.ts`: native session path-versus-selector routing and
+  startup cwd application.
 
 Portable tests exercise precedence, external directories, XDG existence checks,
 exact versioned acknowledgments, invalid names, dotenv refusal, cancellation,

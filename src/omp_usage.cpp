@@ -379,9 +379,17 @@ std::set<fs::path> native_sources(const Native_profile& profile, const addon::Us
         refuse_cache_overlap(path);
         if (!path_exists(path)) return; // Deleted history remains explicitly incomplete.
         if (!fs::is_regular_file(fs::symlink_status(path))) throw Usage_error("usage_source_unavailable");
-        if (path.extension() == ".jsonl") files.insert(fs::canonical(path));
+        files.insert(fs::canonical(path));
     };
-    if (profile.explicit_session_file) add_file(*profile.explicit_session_file);
+    const auto add_exact_source = [&](const fs::path& path) {
+        // Native explicit paths and custom-session-files identify exact files,
+        // including extensionless names. Content validation owns their format.
+        add_file(path);
+        // Public artifactsDirectoryFor/collectSubSessions only derive child
+        // storage for .jsonl names. Do not guess a directory for custom suffixes.
+        if (path.extension() == ".jsonl") roots.insert(path.parent_path() / path.stem());
+    };
+    if (profile.explicit_session_file) add_exact_source(*profile.explicit_session_file);
     refuse_cache_overlap(registry);
     if (path_exists(registry)) {
         if (!fs::is_directory(fs::symlink_status(registry))) throw Usage_error("usage_source_unavailable");
@@ -397,11 +405,9 @@ std::set<fs::path> native_sources(const Native_profile& profile, const addon::Us
                 throw Usage_error("usage_native_registry_invalid");
             const auto path = addon::path_from_utf8(value);
             if (!path.is_absolute()) throw Usage_error("usage_native_registry_invalid");
-            add_file(path);
-            if (path.extension() == ".jsonl") roots.insert(path.parent_path() / path.stem());
+            add_exact_source(path);
         }
     }
-    if (profile.explicit_session_file) roots.insert(profile.explicit_session_file->parent_path() / profile.explicit_session_file->stem());
     for (const auto& root : roots) {
         progress.check();
         refuse_cache_overlap(root);

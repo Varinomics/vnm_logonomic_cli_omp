@@ -9,10 +9,19 @@ the filesystem source; it does not assign historical tokens to a login identity.
 
 The scanner reads local version 3 JSONL sessions from the resolved native
 profile's managed sessions directory, an explicit native session directory or
-file, and the native `custom-session-files` registry. It descends into native
-child/advisor artifact directories. The registry's exact custom paths also
-bring their child artifact directories into the scan. Native compression
-scratch directories are excluded.
+file, and the native `custom-session-files` registry. Exact CLI paths and
+registry targets may be extensionless or have a custom suffix; their JSONL
+content, rather than their filename, must satisfy the same native version and
+entry checks. Recursive directory discovery remains limited to `.jsonl` files.
+For `.jsonl` parents, the public native artifact-directory contract also admits
+their child/advisor storage. Native compression scratch directories are excluded.
+
+The CLI path-versus-selector boundary follows native `createSessionManager`:
+an argument containing `/` or `\`, or ending in `.jsonl`, is a path. A bare
+session name, ID or prefix remains a selector even if a same-named file exists.
+Relative paths resolve after native startup `--cwd` selection; native fork
+selection takes precedence over resume selection. This supplies historical
+source locators, not an exact-resume or current-session identity guarantee.
 
 Each assistant `message.usage` and auxiliary `model_usage.usage` contributes
 one event, across all saved branches. The authoritative amount is the native
@@ -88,6 +97,11 @@ sealing.
 Every completed scan reports `incomplete_historical_coverage:true`. Native
 deletion, no-session runs, inaccessible remote history and missing child files
 prevent a claim of full lifetime coverage. Gzip/database storage is not decoded.
+Child locations belonging to extensionless or custom-suffix parents may remain
+unobserved: public `artifactsDirectoryFor` and `collectSubSessions` provide no
+child-root mapping for those names. The scanner does not use the private Task
+implementation's unconditional six-character truncation to guess a directory;
+that can escape the parent's adjacent artifact namespace for short filenames.
 Symlink entries encountered during recursive discovery are not followed.
 Partial trailing JSONL records are omitted from the frozen complete prefix;
 malformed complete records and unsupported native versions fail explicitly.
@@ -115,12 +129,19 @@ The source contract is pinned to upstream commit
   and `session-migrations.ts`: preserved envelope identity and per-session short IDs.
 - [`session/session-paths.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-paths.ts):
   the exact custom-file registry.
+- [`main.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/main.ts)
+  and `cli/flag-tables.ts`: native exact-path versus session-selector grammar.
+- [`session/sub-sessions.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/sub-sessions.ts):
+  public child-artifact discovery for `.jsonl` parent names.
 - [`stats/src/db.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/stats/src/db.ts)
   and `parser.ts`: copy deduplication, native counters and compression scratch exclusion.
 
 Portable regression tests cover copies, child-versus-Task totals, auxiliary
 calls, discard aliasing, retained history, reset, unknown-dimension refinement,
 conflict rejection, corrupt caches, capacity, cancellation and bounded paging.
+Exact-source regressions include extensionless/custom-suffix registry and CLI
+paths, opaque ID/name selectors, startup cwd/fork precedence, malformed exact
+files and refusal to infer child directories from a custom suffix.
 `tests/native_usage_acceptance.py` additionally asks the official OMP
 `SessionManager.inMemory` API to create a real branch copy, discard rewrite and
 auxiliary usage entry, then serializes those exact returned entries through the

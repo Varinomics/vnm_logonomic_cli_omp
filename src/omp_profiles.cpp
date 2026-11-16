@@ -204,12 +204,21 @@ struct Selectors
     std::optional<std::string> cwd;
 };
 
+bool native_session_path(std::string_view value)
+{
+    // createSessionManager uses this lexical boundary before native ID/name
+    // resolution. A bare custom filename is still a selector, even if it exists.
+    return value.find('/') != std::string_view::npos || value.find('\\') != std::string_view::npos ||
+        value.ends_with(".jsonl");
+}
+
 Selectors selectors(const Launcher_command& launcher)
 {
     if (!interactive_arguments(launcher.arguments)) {
         throw Profile_error("native_profile_launcher_unsupported");
     }
     Selectors result;
+    std::optional<std::string> fork_source;
     for (std::size_t index = 0; index < launcher.arguments.size(); ++index) {
         const std::string_view argument = launcher.arguments[index];
         const auto equals = argument.find('=');
@@ -219,7 +228,7 @@ Selectors selectors(const Launcher_command& launcher)
             if (equals != std::string_view::npos) value = argument.substr(equals + 1);
             else if (index + 1 < launcher.arguments.size() && !launcher.arguments[index + 1].starts_with('-'))
                 value = launcher.arguments[++index];
-            if (value.ends_with(".jsonl")) result.session_file = std::move(value);
+            if (native_session_path(value)) result.session_file = std::move(value);
             else if (option != "--restore" || !value.empty()) result.session_file.reset();
             continue;
         }
@@ -240,7 +249,12 @@ Selectors selectors(const Launcher_command& launcher)
         }
         else if (option == "--session-dir") result.session_directory = value;
         else if (option == "--cwd") result.cwd = value;
+        else if (option == "--fork") fork_source = value;
     }
+    // Native fork selection precedes resume selection, regardless of flag
+    // ordering. Keep selectors opaque; never resolve one as a filesystem path.
+    if (fork_source && !fork_source->empty())
+        result.session_file = native_session_path(*fork_source) ? fork_source : std::nullopt;
     return result;
 }
 

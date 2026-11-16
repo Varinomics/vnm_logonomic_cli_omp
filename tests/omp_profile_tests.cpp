@@ -152,6 +152,45 @@ void selectors_and_paths(const char* executable)
     require(f.failure() == "native_profile_launcher_unsupported", "Compound launchers are never interpreted as profile declarations");
 }
 
+void session_source_paths(const char* executable)
+{
+    Fixture f(executable);
+    for (const auto* flag : {"--session", "--resume", "-r", "--restore"}) {
+        f.request.launcher.script_body = std::string("omp ") + flag + " ./sessions/work";
+        require(f.profile().explicit_session_file == f.cwd / "sessions/work",
+            "Native path aliases retain exact relative extensionless sources");
+    }
+    const auto custom = f.cwd / addon::path_from_utf8("sessions/caf\xc3\xa9 history.record");
+    f.request.launcher.script_body = "omp --session=\"" + addon::path_to_utf8(custom) + "\"";
+    require(f.profile().explicit_session_file == custom,
+        "Absolute non-ASCII custom-suffix paths remain exact sources");
+    f.request.launcher.script_body = "omp --session folder\\work";
+    require(f.profile().explicit_session_file == (f.cwd / addon::path_from_utf8("folder\\work")).lexically_normal(),
+        "The native path criterion includes backslashes without inventing cross-platform separator rules");
+    for (const auto* selector : {"work", "8fc4094a-6aa6-440e-b478-a5b2de576c48", "work.JSONL"}) {
+        f.request.launcher.script_body = std::string("omp --session ") + selector;
+        require(!f.profile().explicit_session_file, "Native names and IDs must remain opaque selectors");
+    }
+    f.request.launcher.script_body = "omp --session work.jsonl";
+    require(f.profile().explicit_session_file == f.cwd / "work.jsonl",
+        "A literal .jsonl basename is a native exact path without a separator");
+    fs::create_directory(f.cwd / "other");
+    f.request.launcher.script_body = "omp --cwd ./other --session ../sessions/work";
+    require(f.profile().explicit_session_file == f.cwd / "sessions/work",
+        "Relative sources resolve after the native startup cwd selection");
+    f.request.launcher.script_body = "omp --session ./work --restore";
+    require(f.profile().explicit_session_file == f.cwd / "work", "Bare restore preserves the selected native source");
+    for (const auto* suffix : {"--resume", "--restore work", "--session work"}) {
+        f.request.launcher.script_body = std::string("omp --session ./work ") + suffix;
+        require(!f.profile().explicit_session_file, "A later picker or native selector clears an earlier exact path");
+    }
+    f.request.launcher.script_body = "omp --fork ./fork-source --session ./resume-source";
+    require(f.profile().explicit_session_file == f.cwd / "fork-source",
+        "Native fork source selection precedes resume irrespective of flag order");
+    f.request.launcher.script_body = "omp --session ./resume-source --fork fork-name";
+    require(!f.profile().explicit_session_file, "A native fork selector cannot inherit an unrelated resume path");
+}
+
 void xdg_and_environment(const char* executable)
 {
     Fixture f(executable);
@@ -258,6 +297,7 @@ int main(int, char** argv)
 {
     try {
         selectors_and_paths(argv[0]);
+        session_source_paths(argv[0]);
         xdg_and_environment(argv[0]);
         inventory_and_acknowledgments(argv[0]);
         std::puts("PASS native source profiles, SDK accounts and selected-context acknowledgments");
