@@ -174,9 +174,23 @@ void xdg_and_environment(const char* executable)
 #endif
     std::ofstream(f.cwd / ".env") << "OPENAI_API_KEY=fixture-not-a-live-key\n";
     require(!f.profile().account_key.empty(), "Ordinary native credential dotenv files are not interpreted or rejected");
-    std::ofstream(f.cwd / ".env.local") << "export PI_CODING_AGENT_DIR=unresolved-native-source\n";
-    require(f.failure() == "native_profile_environment_unsupported",
-        "Native dotenv path redirection cannot be silently replaced with the host ambient path");
+    for (const auto* content : {
+            "export PI_CODING_AGENT_DIR=unresolved-native-source\n",
+            "\xef\xbb\xbfPI_CONFIG_DIR=.redirected\n",
+            "PI_CONFIG_DIR : .redirected\n",
+            "\vPI_CONFIG_DIR\f= .redirected\n",
+            "PI_CONFIG_DIR\n= .redirected\n",
+            "# PI_CONFIG_DIR=.redirected\n",
+            "\"PI_CONFIG_DIR\"=.redirected\n",
+            "OPENAI_API_KEY=PI_CONFIG_DIR=.redirected\n",
+            "OPENAI_API_KEY='quoted HOME text'\n"}) {
+        std::ofstream(f.cwd / ".env.local", std::ios::binary) << content;
+        require(f.failure() == "native_profile_environment_unsupported",
+            "Selector spellings must be refused without guessing native assignment, comment or quoted-value grammar");
+    }
+    std::ofstream(f.cwd / ".env.local", std::ios::binary) << "\xef\xbb\xbfOPENAI_API_KEY : fixture-only\n"
+        "ANTHROPIC_API_KEY='fixture\ncredential'\n# Ordinary credentials remain admissible.\n";
+    require(!f.profile().account_key.empty(), "Credential-only dotenv syntax does not need an add-on parser");
     fs::remove(f.cwd / ".env.local");
     addon::Contract_failure failure;
     require(!omp::resolve_native_profile(f.request.launcher, f.request.launch_environment,

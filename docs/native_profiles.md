@@ -49,10 +49,14 @@ launcher. It applies these source-established rules:
 Native Bun/OMP dotenv loading can also change home, profile, agent, session or
 XDG paths after the host freezes its environment. The adapter does not implement
 a second dotenv interpreter. It inspects the relevant native dotenv locations
-and refuses `native_profile_environment_unsupported` when a directory selector
-is present, or its bounded inspection cannot establish the source. Ordinary
-credential-only dotenv files remain allowed; their values are neither imported
-into the adapter environment nor returned. Windows drive-relative paths are
+and refuses `native_profile_environment_unsupported` when any directory-selector
+spelling occurs in their bytes, or its bounded inspection cannot establish the
+source. This deliberately includes selector names inside comments and quoted
+values: native runtime grammar, including BOM prefixes, colon delimiters and
+whitespace across lines, must not turn a partial parser into a wrong account
+acknowledgment. Credential-only files without selector spellings remain allowed;
+their values are neither imported into the adapter environment nor returned.
+Windows drive-relative paths are
 also unavailable because the request does not contain native per-drive state.
 
 ## Selected-account acknowledgments
@@ -98,3 +102,10 @@ version-2 source account, and completes a real local-model turn whose model
 configuration exists only inside that selected native profile. It passed with
 official OMP 18.20.2/Bun 1.4.4 on Linux; this does not qualify other platforms or
 authenticated provider accounts.
+
+`tests/native_profile_dotenv_acceptance.py` separately invokes the actual
+packaged discovery, resolution and structured preparation paths while the
+installed native `dirs.ts`/`env.ts` provide the dotenv oracle. It covers the
+confirmed BOM/colon redirections, vertical whitespace and newline variants,
+conservative comment/quote refusals, and preserved credential-only syntax.
+It performs no model request or sign-in.

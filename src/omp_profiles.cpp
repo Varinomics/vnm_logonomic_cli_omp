@@ -142,14 +142,17 @@ bool path_exists(const fs::path& path)
 // Bun can load project dotenv before native CLI bootstrap, and OMP later reads
 // project/agent/config/home dotenv and refreshes its directory resolver. A path
 // selector there cannot be resolved from the frozen host environment alone.
-// Detect that boundary without interpreting dotenv values or credential text.
+// This is deliberately not an assignment parser. Native parseEnv accepts BOM,
+// colon delimiters and whitespace across lines, and its grammar is runtime-owned.
+// Refuse any selector spelling, even inside comments or quoted values, instead
+// of admitting a file on the strength of a partial dotenv interpretation.
 void check_dotenv(const std::set<fs::path>& directories, const std::function<bool()>& cancelled)
 {
     std::size_t sources = 0;
-    static const std::regex selector(
-        "(^|[\\r\\n])[ \\t]*(export[ \\t]+)?(HOME|USERPROFILE|OMP_PROFILE|PI_PROFILE|"
-        "(PI|OMP)_CONFIG_DIR|(PI|OMP)_CODING_AGENT_DIR|(PI|OMP)_CODING_AGENT_SESSION_DIR|"
-        "XDG_(DATA|STATE|CACHE)_HOME)[ \\t]*=", std::regex::icase);
+    constexpr std::string_view selectors[] = {"HOME", "USERPROFILE", "OMP_PROFILE", "PI_PROFILE",
+        "PI_CONFIG_DIR", "OMP_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_CODING_AGENT_DIR",
+        "PI_CODING_AGENT_SESSION_DIR", "OMP_CODING_AGENT_SESSION_DIR", "XDG_DATA_HOME",
+        "XDG_STATE_HOME", "XDG_CACHE_HOME"};
     for (const auto& directory : directories) {
         check_cancelled(cancelled);
         if (!path_exists(directory)) {
@@ -181,7 +184,12 @@ void check_dotenv(const std::set<fs::path>& directories, const std::function<boo
                 if (content.size() > 1024 * 1024) throw Profile_error("native_profile_environment_unsupported");
             }
             if (!input.eof()) throw Profile_error("native_profile_source_unavailable");
-            if (std::regex_search(content, selector)) {
+            for (auto& character : content) {
+                if (character >= 'a' && character <= 'z') character -= 'a' - 'A';
+            }
+            if (std::any_of(std::begin(selectors), std::end(selectors), [&](const auto selector) {
+                    return content.find(selector) != std::string::npos;
+                })) {
                 throw Profile_error("native_profile_environment_unsupported");
             }
         }
