@@ -1,4 +1,5 @@
 #include "omp_rpc.h"
+#include "omp_profiles.h"
 
 #include <logonomic_cli_addon/json_utilities.h>
 #include <logonomic_cli_addon/package_source.h>
@@ -104,13 +105,26 @@ addon::Structured_prepare_request request_for(const Temporary_directory& directo
     request.context.working_directory = directory.path();
 #ifdef _WIN32
     const char* platform = "windows-x86_64";
+#elif defined(__APPLE__)
+    const char* platform = "macos-arm64";
 #else
     const char* platform = "linux-x86_64";
 #endif
     request.context.launch_environment = addon::Launch_environment{platform,
         json::object({{"PI_CODING_AGENT_DIR", Json(directory.path())}, {"CUSTOM_SAVED_TOKEN", Json("kept-in-environment")},
             {"LOGONOMIC_PROVIDER_HELPERS_DIR", Json("host-owned")}}), std::nullopt};
-    request.context.account_context = addon::Account_context{1, "selected-account", directory.path()};
+    request.context.launch_environment->effective_environment.set(
+#ifdef _WIN32
+        "USERPROFILE",
+#else
+        "HOME",
+#endif
+        Json(directory.path()));
+    const auto profile = omp::resolve_native_profile(request.context.launcher, *request.context.launch_environment,
+        directory.path(), {}, request.context.launcher_argv, {}, nullptr);
+    require(profile.has_value(), "The saved native profile fixture must resolve");
+    request.context.account_context = addon::Account_context{2, profile->account_key,
+        addon::path_to_utf8(profile->source_profile)};
     request.context.profile_storage = addon::Profile_storage_context{1, directory.path()};
     return request;
 }
@@ -195,7 +209,8 @@ void preparation_contract(const Temporary_directory& directory)
         result->process.environment_names.end(), "Explicit saved environment must survive replacement");
     require(std::find(result->process.environment_names.begin(), result->process.environment_names.end(), "LOGONOMIC_PROVIDER_HELPERS_DIR") ==
         result->process.environment_names.end(), "The adapter must not propose host-reserved environment names");
-    require(result->account_context && result->account_context->adapter_account_key == "selected-account" &&
+    require(result->account_context && result->account_context->adapter_account_key == request.context.account_context->adapter_account_key &&
+        result->account_context->version == 2 && result->account_context->profile_path == request.context.account_context->profile_path &&
         result->profile_storage && result->profile_storage->root == directory.path(), "Selected account and storage must be echoed");
     require(addon::decode_structured_prepare_result(addon::encode_structured_prepare_result(*result), &failure).has_value(),
         "Preparation must round-trip the public SDK contract");
@@ -234,6 +249,7 @@ void ambient_profile_contract(const Temporary_directory& directory)
         auto request = request_for(directory);
         request.context.launcher = {'"' + directory.program() + '"', "direct", ""};
         request.context.launcher_argv = {directory.program()};
+        request.context.account_context.reset();
         auto& environment = *request.context.launch_environment;
         environment.effective_environment = addon::ambient_view(ambient,
             addon::Launcher_discovery_declaration{declaration->environment_names}, environment.platform_id);

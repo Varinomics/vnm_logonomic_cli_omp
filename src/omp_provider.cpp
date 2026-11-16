@@ -1,4 +1,5 @@
 #include "omp_provider.h"
+#include "omp_profiles.h"
 #include "omp_wake.h"
 
 #include <logonomic_cli_addon/launch_preparation.h>
@@ -147,6 +148,11 @@ void handle_launch_preparation(addon::Invocation_context& context)
     const auto request = addon::decode_prepare_request(context.request().payload, &failure);
     if (!request) {
         context.fail(addon::Result_status::FAILED, failure.reason_code, failure.detail);
+        return;
+    }
+    if (!validate_native_account(*request, [&] { return context.cancel_requested(); }, &failure)) {
+        context.fail(context.cancel_requested() ? addon::Result_status::CANCELLED : addon::Result_status::UNAVAILABLE,
+            failure.reason_code, failure.detail);
         return;
     }
     addon::Launch_patch patch;

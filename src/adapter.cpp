@@ -1,4 +1,5 @@
 #include "omp_provider.h"
+#include "omp_profiles.h"
 #include "omp_conversation.h"
 #include "omp_launcher_approval.h"
 #include "omp_lifecycle.h"
@@ -22,6 +23,10 @@ void invoke(addon::Invocation_context& context)
             return;
         }
         const auto& capability = context.request().capability.capability_id;
+        if (capability == "accounts") {
+            omp::handle_accounts(context);
+        }
+        else
         if (capability == "launcher-discovery") {
             omp::handle_discovery(context);
         }
@@ -82,6 +87,7 @@ int main()
         {"context-state", 2}, {"execution-context", 1}, {"model-state", 1}, {"child-state", 1}, {"model-catalog", 1},
         {"conversation-export", 1},
         {"profile-storage", 1}, {"session-wake", 1},
+        {"accounts", 2},
         {"interactive-initial-prompt", 1},
     };
     addon::Adapter_runtime runtime(std::move(options));

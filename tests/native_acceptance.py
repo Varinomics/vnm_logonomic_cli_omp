@@ -758,10 +758,26 @@ class Native_case:
                     "Actual adapter did not discover the installed native launcher")
             capability = "delegated-session" if delegated else "structured-session"
             request = self.prepare_request(delegated)
+            if self.name == "profile":
+                account_request = {"launcher": request["launcher"],
+                    "launch_environment": {"platform": "linux-x86_64",
+                        "effective_environment": self.frozen_environment("accounts", 2)},
+                    "normalization_directory": str(self.root / "workspace"),
+                    "default_home_fallback": str(self.root / "home")}
+                accounts = self.host("accounts", 2, "discover", account_request, "account-discover")["accounts"]
+                selected = self.host("accounts", 2, "resolve", account_request, "account-resolve")["adapter_account_key"]
+                account = next((row for row in accounts if row["adapter_account_key"] == selected), None)
+                require(account is not None and account["profile_path"] == str(self.root / "home/.omp-fixture/profiles/chosen")
+                    and account["display_name"] == "chosen", "Account discovery did not resolve the exact native source profile")
+                request["account_context"] = {"version": 2, "adapter_account_key": selected,
+                    "profile_path": account["profile_path"]}
             if self.name in OBSERVATION_SCENARIOS:
                 _patch, self.argv, _environment = self.prepare_interactive()
                 request = self.prepare_request(False)
             prepared = self.host(capability, 3, "prepare", request, "prepare")
+            if self.name == "profile":
+                require(prepared.get("account_context") == request["account_context"],
+                        "Native preparation did not acknowledge the exact selected source account")
             write_json(self.root / "prepared.json", prepared)
             for artifact in prepared.get("private_artifacts", []):
                 target = self.root / "plugin" / artifact["relative_path"]

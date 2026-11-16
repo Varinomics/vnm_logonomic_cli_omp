@@ -50,7 +50,7 @@ function(omp_target target)
     endif()
 endfunction()
 
-add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp src/omp_lifecycle.cpp src/omp_telemetry.cpp src/omp_model_catalog.cpp src/omp_launcher_approval.cpp src/omp_conversation.cpp src/omp_wake.cpp)
+add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp src/omp_lifecycle.cpp src/omp_telemetry.cpp src/omp_model_catalog.cpp src/omp_launcher_approval.cpp src/omp_conversation.cpp src/omp_wake.cpp src/omp_profiles.cpp)
 target_include_directories(omp_provider PUBLIC src)
 target_link_libraries(omp_provider PUBLIC logonomic_cli_addon_sdk::sdk)
 if(WIN32)
@@ -82,6 +82,10 @@ add_executable(omp_provider_tests tests/omp_provider_tests.cpp)
 target_link_libraries(omp_provider_tests PRIVATE omp_provider)
 omp_target(omp_provider_tests)
 add_test(NAME omp_provider_tests COMMAND omp_provider_tests)
+add_executable(omp_profile_tests tests/omp_profile_tests.cpp)
+target_link_libraries(omp_profile_tests PRIVATE omp_provider)
+omp_target(omp_profile_tests)
+add_test(NAME omp_profile_tests COMMAND omp_profile_tests)
 add_executable(omp_rpc_tests tests/omp_rpc_tests.cpp)
 target_link_libraries(omp_rpc_tests PRIVATE omp_provider)
 omp_target(omp_rpc_tests)
@@ -128,5 +132,5 @@ add_test(NAME omp_package_validation COMMAND logonomic_cli_addon_validate
     "${OMP_PACKAGE_DIRECTORY}" --platform "${OMP_PLATFORM}")
 add_test(NAME omp_package_conformance COMMAND logonomic_cli_addon_conformance
     "${OMP_PACKAGE_DIRECTORY}")
-set_tests_properties(omp_provider_tests omp_rpc_tests omp_conversation_tests omp_lifecycle_tests omp_catalog_tests omp_package_validation omp_package_conformance
+set_tests_properties(omp_provider_tests omp_profile_tests omp_rpc_tests omp_conversation_tests omp_lifecycle_tests omp_catalog_tests omp_package_validation omp_package_conformance
     PROPERTIES TIMEOUT 120 LABELS "cli-addon;provider-contract")

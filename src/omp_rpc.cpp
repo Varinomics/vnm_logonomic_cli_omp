@@ -1,6 +1,7 @@
 #include "omp_rpc.h"
 
 #include "omp_provider.h"
+#include "omp_profiles.h"
 
 #include <logonomic_cli_addon/json_utilities.h>
 #include <logonomic_cli_addon/launcher_utilities.h>
@@ -580,6 +581,9 @@ std::optional<addon::Process_proposal> prepare_process(
         return std::nullopt;
     }
     const auto& environment = *context.launch_environment;
+    if (!validate_native_account(context, {}, failure)) {
+        return std::nullopt;
+    }
     const auto launcher = recognize_launcher(context.launcher, environment.platform_id, context.launcher_argv);
     if (!launcher || !session_arguments(launcher->arguments)) {
         reject(failure, "launcher_unavailable", "The saved launcher must be a literal OMP invocation with supported options and no startup task, resume, alias, mode or directory override.");

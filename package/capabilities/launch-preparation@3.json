@@ -1,5 +1,5 @@
 {
   "capability_id": "launch-preparation",
   "version": 3,
-  "payload": {"environment_names": ["PI_CODING_AGENT_DIR", "BUN_INSTALL", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR", "XDG_STATE_HOME", "XDG_CACHE_HOME"]}
+  "payload": {"environment_names": ["PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "BUN_INSTALL", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR", "XDG_STATE_HOME", "XDG_CACHE_HOME"]}
 }
