@@ -26,13 +26,14 @@ remains an allowlist when the package module is added.
 | Feature | Implementation |
 |---|---|
 | Launcher discovery and preparation | Frozen-environment `omp` discovery, literal launcher recognition, preserved native arguments and a custodied extension asset. |
+| Launcher approval controls | Yolofy and Unyolofy edit native tool-approval flags in understood literal launchers while retaining other arguments and saved configuration. |
 | Root session lifecycle | Native session load, successful switch, clear, branch/tree change and shutdown. Each activation has separate correlation even when `/clear` keeps the native UUID. |
 | Root working and completion | Native agent-loop events and continuation decisions, including the terminal callback before prompt unwinding. Successful, failed and interrupted outcomes remain distinct. |
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
 | Direct subagents | Native task/eval child registry ids and start/stop events, kept separate from root completion. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |
 | Structured work | Native RPC v2 readiness/negotiation, bounded incremental inspection, exact prompt delivery and verified terminal evidence. |
-| Delegated work and model selection | Native model catalog, exact model keys and supported reasoning-level selection through the same RPC path. |
+| Delegated work and model selection | Exact requested model and supported reasoning-level selection, with native state and response validation through the same RPC path. |
 
 Each package declares these capabilities in `package/capabilities`;
 Logonomic adopts only the intersection supported by its host and the running
@@ -40,6 +41,12 @@ adapter. The inspected upstream version is recorded as provenance, with no
 version ceiling or arbitrary tested-version minimum. Native runtime evidence
 guards completion; a missing continuation field degrades observation instead
 of manufacturing success.
+
+Model selection applies to delegated tasks. This version does not list available
+models or report the active interactive model, provider, or reasoning level.
+Yolofy adds native `--yolo`; Unyolofy removes recognized invocation bypasses.
+Unyolofy preserves saved native policy, which may itself permit tools without
+asking. Neither action edits the native configuration or imposes a new policy.
 
 The direct-subagent feature covers immediate task-tool and eval `agent()`
 children on the public session bus. It does not promise the private whole
@@ -54,7 +61,8 @@ resume can follow a newer continuation or fork a moved session, so an absolute
 path alone cannot guarantee the requested native identity. The extension
 reports whichever native identity actually loaded. See
 [the native contract](docs/native_contract.md) for the evidence and complete
-coverage boundaries.
+coverage boundaries, and [feature coverage](docs/feature_status.md) for the
+implemented and missing host integrations.
 
 Noninteractive modes, compound scripts, positional startup prompts, unknown
 extension-owned launch flags, and Windows `.cmd`/`.ps1` wrappers retain their

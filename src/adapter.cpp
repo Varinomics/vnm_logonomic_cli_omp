@@ -1,4 +1,5 @@
 #include "omp_provider.h"
+#include "omp_launcher_approval.h"
 #include "omp_lifecycle.h"
 #include "omp_rpc.h"
 
@@ -24,6 +25,10 @@ void invoke(addon::Invocation_context& context)
         else
         if (capability == "launch-preparation") {
             omp::handle_launch_preparation(context);
+        }
+        else
+        if (capability == "launcher-approval") {
+            addon::handle_launcher_approval(context, omp::launcher_approval_rules());
         }
         else
         if (capability == "structured-session") {
@@ -54,7 +59,7 @@ int main()
     options.adapter_name    = "omp-addon";
     options.adapter_version = "1.0.0";
     options.capabilities = {
-        {"presentation", 1}, {"launcher-discovery", 1}, {"launch-preparation", 3},
+        {"presentation", 1}, {"launcher-discovery", 1}, {"launch-preparation", 3}, {"launcher-approval", 1},
         {"structured-session", 3}, {"delegated-session", 3}, {"delegated-model-selection", 1},
         {"structured-failure-diagnostics", 1},
         {"managed-assets", 1}, {"lifecycle-events", 2}, {"helper-ingress", 2}, {"attention-kind", 1},

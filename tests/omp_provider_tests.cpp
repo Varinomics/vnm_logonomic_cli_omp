@@ -1,4 +1,5 @@
 #include "omp_provider.h"
+#include "omp_launcher_approval.h"
 
 #include <logonomic_cli_addon/launch_preparation.h>
 #include <logonomic_cli_addon/launcher_utilities.h>
@@ -54,6 +55,84 @@ void recognition()
         "linux-x86_64");
     require(assigned && assigned->environment_names == std::vector<std::string>{"PI_CODING_AGENT_DIR"},
         "Shell assignments must be obtained from the frozen environment instead of re-evaluated");
+}
+
+void launcher_approval()
+{
+    // Oracles: native cli/args.ts and cli/flag-tables.ts parse the bypass
+    // aliases/modes; tools/approval.ts gives autoApprove precedence. The SDK
+    // contract requires literal operand preservation and idempotent editing.
+    const auto& rules = omp::launcher_approval_rules();
+    const auto transform = [&](std::string script, addon::Launcher_approval_action action,
+                               std::string runner = "bash", std::string platform = "linux-x86_64") {
+        const addon::Launcher_approval_transform_request request{{std::move(script), std::move(runner),
+            "OMP_PROFILE=selected\nNATIVE_TEXT=--yolo"}, std::move(platform), action};
+        const auto result = addon::transform_launcher_approval(request, rules);
+        require(addon::decode_launcher_approval_transform_result(
+            addon::encode_launcher_approval_transform_result(result), nullptr).has_value(),
+            "The approval edit must satisfy its public SDK wire contract");
+        if (result.disposition != addon::Launcher_approval_disposition::UNSUPPORTED) {
+            auto repeated = request;
+            repeated.launcher.script_body = result.script_body;
+            const auto second = addon::transform_launcher_approval(repeated, rules);
+            require(second.disposition == addon::Launcher_approval_disposition::UNCHANGED &&
+                second.script_body == result.script_body, "Approval transformations must be idempotent");
+        }
+        return result;
+    };
+    const auto yolofy = addon::Launcher_approval_action::YOLOFY;
+    const auto unyolofy = addon::Launcher_approval_action::UNYOLOFY;
+    auto result = transform("omp --approval-mode write --profile 'work profile' --model provider/model "
+        "--system-prompt '--yolo' 'do this'", yolofy);
+    require(result.disposition == addon::Launcher_approval_disposition::CHANGED,
+        "A known native approval mode can be replaced with the canonical bypass");
+    const auto invocation = addon::literal_launcher_invocation({result.script_body, "bash", ""}, "linux-x86_64");
+    require(invocation && invocation->argv == std::vector<std::string>{"omp", "--yolo", "--profile", "work profile",
+        "--model", "provider/model", "--system-prompt", "--yolo", "do this"},
+        "Approval edits must preserve profile/model selection and flag-shaped prompt values");
+    require(result.script_body.find("--profile 'work profile'") != std::string::npos,
+        "Unrelated original shell spelling must survive the edit");
+
+    result = transform("omp --auto-approve --approval-mode=yolo --yolo --approval-mode always-ask-cached -- ask", unyolofy);
+    require(result.disposition == addon::Launcher_approval_disposition::CHANGED &&
+        result.script_body == "omp --approval-mode always-ask-cached -- ask",
+        "Unyolofy removes every native bypass but preserves an explicit non-bypass mode and prompt boundary");
+    result = transform("omp --approval-mode write --config policy.yml", unyolofy);
+    require(result.disposition == addon::Launcher_approval_disposition::UNCHANGED &&
+        result.script_body == "omp --approval-mode write --config policy.yml",
+        "Removing a bypass must not invent or remove a native configured approval policy");
+    result = transform("omp -- --yolo", unyolofy);
+    require(result.disposition == addon::Launcher_approval_disposition::UNCHANGED,
+        "A flag-shaped positional prompt is data, not an invocation bypass");
+    result = transform("omp --resume --yolo prompt", unyolofy);
+    require(result.disposition == addon::Launcher_approval_disposition::UNSUPPORTED,
+        "Removal cannot let an optional resume selector consume a formerly positional prompt");
+    result = transform("& 'C:\\Tools\\omp.exe' --auto-approve --model native/exact", unyolofy,
+        "powershell", "windows-x86_64");
+    require(result.disposition == addon::Launcher_approval_disposition::CHANGED &&
+        result.script_body == "& 'C:\\Tools\\omp.exe' --model native/exact",
+        "The SDK must own PowerShell quoting and literal native argument transport");
+    result = transform("omp.cmd --approval-mode=write", yolofy, "cmd", "windows-x86_64");
+    require(result.disposition == addon::Launcher_approval_disposition::CHANGED,
+        "Saved npm wrappers can have their literal approval flags edited without replacing the wrapper");
+    for (const auto* script : {"omp config set tools.approvalMode yolo", "omp --approval-mode maybe",
+             "omp --unknown-flag value", "omp --plan --yolo prompt", "omp --extension C:\\part --yolo file.ts",
+             "omp --yolo=false", "omp --model", "omp && echo done"}) {
+        require(transform(script, yolofy).disposition == addon::Launcher_approval_disposition::UNSUPPORTED,
+            "Management, shadowable/unknown arities and ambiguous native option forms must remain unsupported");
+    }
+
+    const auto key = [&](std::string script, std::string environment = "OMP_PROFILE=selected") {
+        return addon::launcher_approval_comparison_key({{std::move(script), "direct", std::move(environment)},
+            "linux-x86_64"}, rules);
+    };
+    const auto plain = key("omp --model native/exact");
+    require(plain.supported && key("omp --yolo --model native/exact").key == plain.key &&
+        key("omp --approval-mode write --model native/exact").key == plain.key,
+        "Rescan comparison may ignore only understood approval arguments");
+    require(key("omp --model native/other").key != plain.key &&
+        key("omp --model native/exact", "OMP_PROFILE=other").key != plain.key,
+        "Model and profile/account environment changes must remain distinct launchers");
 }
 
 class Invocation_fixture : public addon::Invocation_context
@@ -186,6 +265,7 @@ int main(int, char** argv)
 {
     try {
         recognition();
+        launcher_approval();
         launch_preparation(argv[0]);
         std::puts("PASS omp provider launcher contracts");
         return 0;

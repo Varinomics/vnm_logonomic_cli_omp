@@ -174,12 +174,39 @@ only after negotiation. Completion requires native prompt-result and settled
 state evidence; partial assistant text and a bare process exit do not prove
 success. The SDK's launch bridge retains attached process custody and the
 selected native executable. Saved environment, model, profile and approval
-choices remain intact. Delegated model selection uses exact provider/model
-keys from the native catalog; selected unsupported reasoning levels fail
+choices remain intact. Delegated model selection accepts native provider/model
+keys and verifies the resolved model; selected unsupported reasoning levels fail
 instead of silently substituting a different level. See `omp_rpc_tests` and
 the public
 [`docs/rpc.md`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/docs/rpc.md)
-for readiness, terminal, error and model-catalog fixture contracts.
+for readiness, terminal, error and model-selection contracts. The add-on does
+not call `get_available_models` or provide a model catalog. The inspected
+`get_state.model` and `thinkingLevel` fields validate explicit task choices;
+they are not live interactive model telemetry.
+
+## Launcher approval transformations
+
+`launcher-approval@1` uses the SDK's literal launcher editor. OMP's
+`cli/args.ts` treats `--yolo` and `--auto-approve` as `autoApprove: true`.
+`cli/flag-tables.ts` accepts `--approval-mode` values `yolo`, `always-ask`,
+`always-ask-cached` and `write`; `tools/approval.ts` makes `autoApprove`
+override the configured mode. Yolofy replaces these known mode arguments and
+bypass aliases with one `--yolo`. Unyolofy removes bypasses, preserves other
+explicit modes and leaves native configuration unchanged. In particular,
+OMP's schema default is `tools.approvalMode: yolo`, so removing a CLI override
+does not establish that permission dialogs will appear.
+
+The editor retains profile, model, configuration, prompt and tool-selection
+operands. It rejects compound scripts, unknown option arities, management
+commands and unsupported mode values. The extension-shadowable `--plan`
+option is deliberately outside this bounded editing grammar. Explicit
+`--extension`, `--hook`, and `--trusted-extension` operands are also left to
+the ordinary launcher: OMP can join split Windows module paths, which is
+not a scalar option grammar the SDK editor promises to reinterpret. The contract
+changes native tool-approval arguments only; it does not change plan workflow
+or native tool-specific restrictions.
+
+## Delegated native routing
 
 Delegation uses OMP's supported `.claude-plugin/plugin.json` and `.mcp.json`
 layout through `--plugin-dir`. This native plugin format accepts the host's
