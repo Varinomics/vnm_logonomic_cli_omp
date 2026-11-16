@@ -97,6 +97,8 @@ add_test(NAME omp_lifecycle_tests COMMAND omp_lifecycle_tests)
 add_executable(omp_wake_test_driver tests/omp_wake_test_driver.cpp)
 target_link_libraries(omp_wake_test_driver PRIVATE omp_provider)
 omp_target(omp_wake_test_driver)
+add_executable(omp_native_host_driver tests/omp_native_host_driver.cpp)
+omp_target(omp_native_host_driver)
 find_program(OMP_NODE_EXECUTABLE node)
 if(OMP_NODE_EXECUTABLE)
     execute_process(COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types --version
