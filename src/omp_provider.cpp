@@ -19,7 +19,7 @@ bool one_of(std::string_view option, std::initializer_list<std::string_view> opt
     return std::find(options.begin(), options.end(), option) != options.end();
 }
 
-std::optional<bool> interactive_flags(std::span<const std::string> arguments)
+std::optional<bool> interactive_flags(std::span<const std::string> arguments, bool initial_prompt = false)
 {
     bool trusted = false;
     bool ordinary_extension = false;
@@ -27,6 +27,10 @@ std::optional<bool> interactive_flags(std::span<const std::string> arguments)
         const std::string_view argument = arguments[index];
         const auto equals = argument.find('=');
         const auto option = argument.substr(0, equals);
+        if (initial_prompt && one_of(option,
+                {"--continue", "-c", "--resume", "-r", "--session", "--restore", "--fork", "--goal"})) {
+            return std::nullopt;
+        }
         if (one_of(option, {"--provider", "--model", "--thinking", "--approval-mode", "--profile", "--cwd", "--add-dir",
                 "--config", "--tools", "--skills", "--system-prompt",
                 "--append-system-prompt", "--system-prompt-template", "--extension", "-e", "--hook",
@@ -148,7 +152,15 @@ void handle_launch_preparation(addon::Invocation_context& context)
     patch.disposition     = addon::Launch_disposition{false, false, false};
     patch.profile_storage = request->profile_storage;
     patch.account_context = request->account_context;
-    const auto unchanged = [&] { context.succeed(addon::encode_launch_patch(patch)); };
+    const auto unchanged = [&] {
+        if (request->initial_prompt) {
+            context.fail(addon::Result_status::UNAVAILABLE, "initial_prompt_unavailable",
+                "This native invocation cannot carry an unchanged first message into a fresh interactive session.");
+        }
+        else {
+            context.succeed(addon::encode_launch_patch(patch));
+        }
+    };
     if (!request->launch_environment ||
         std::find(request->declared_assets.begin(), request->declared_assets.end(), extension_asset) == request->declared_assets.end()) {
         unchanged();
@@ -156,7 +168,15 @@ void handle_launch_preparation(addon::Invocation_context& context)
     }
     const auto& launch_environment = *request->launch_environment;
     const auto launcher = recognize_launcher(request->launcher, launch_environment.platform_id, request->launcher_argv);
-    if (!launcher || !interactive_arguments(launcher->arguments)) {
+    const auto flags = launcher ? interactive_flags(launcher->arguments, request->initial_prompt.has_value()) : std::nullopt;
+    if (!flags) {
+        unchanged();
+        return;
+    }
+    // AgentSession expands slash commands/templates and ^model mentions before
+    // constructing a user message. A host-authored first message must stay literal.
+    if (request->initial_prompt && (request->initial_prompt->text.starts_with('/') ||
+            request->initial_prompt->text.find('^') != std::string::npos)) {
         unchanged();
         return;
     }
@@ -176,10 +196,18 @@ void handle_launch_preparation(addon::Invocation_context& context)
             return;
         }
     }
-    const bool trusted = *interactive_flags(launcher->arguments);
+    const bool trusted = *flags;
     std::vector<std::string> arguments{addon::path_to_utf8(*program)};
     arguments.insert(arguments.end(), launcher->arguments.begin(), launcher->arguments.end());
     arguments.insert(arguments.end(), {trusted ? "--trusted-extension" : "--extension", "{{asset:assets/logonomic.ts}}"});
+    if (request->initial_prompt) {
+        // Native parseArgs treats every argument after -- as one literal
+        // message, including @file and flag-shaped text. main.ts submits each
+        // argv message independently; keep the complete host text in one entry.
+        arguments.insert(arguments.end(), {"--", request->initial_prompt->text});
+        patch.initial_prompt = addon::Initial_prompt_acknowledgment{
+            addon::initial_prompt_text_digest_hex(request->initial_prompt->text)};
+    }
     patch.argv = std::move(arguments);
     for (const auto& name : launcher->environment_names) {
         const auto value = std::find_if(environment.begin(), environment.end(), [&](const auto& entry) {
@@ -189,6 +217,11 @@ void handle_launch_preparation(addon::Invocation_context& context)
         patch.set.emplace_back(name, value->second);
     }
     patch.disposition = addon::Launch_disposition{true, true, true};
+    if (request->initial_prompt && !addon::validate_launch_patch(patch, request->declared_assets,
+            {std::string(extension_asset)}, &failure)) {
+        unchanged();
+        return;
+    }
     context.succeed(addon::encode_launch_patch(patch));
 }
 

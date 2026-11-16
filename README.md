@@ -34,6 +34,7 @@ remains an allowlist when the package module is added.
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
 | Direct subagents | Native task/eval child registry ids and start/stop events, kept separate from root completion. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |
+| Host-authored initial prompt | One exact first user message for a fresh supported interactive invocation, acknowledged through `interactive-initial-prompt@1`. |
 | Structured work | Native RPC v2 readiness/negotiation, bounded incremental inspection, exact prompt delivery and verified terminal evidence. |
 | Delegated work and model selection | Exact requested model and supported reasoning-level selection, with native state and response validation through the same RPC path. |
 | Conversation export | Exact captured JSONL session, selected native branch, full or compact text, Markdown, and highlighted conversation formats. |
@@ -78,6 +79,13 @@ Windows preparation uses a native `omp.exe`; POSIX executable/shebang
 launchers are supported. Credentials, native account management, quota,
 and usage accounting remain outside this package's
 declared capabilities.
+
+A host initial prompt is supported on a fresh launcher without an existing
+prompt, attachment or resume/continue/fork/goal selector. It is passed as one
+literal argument after `--`. Slash-command and caret model-mention text is
+refused because native processing can rewrite it. A refused host initial prompt
+fails preparation explicitly; it does not fall back to a launch without the
+requested message.
 
 ## Building
 

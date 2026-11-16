@@ -186,9 +186,10 @@ public:
     void succeed(addon::Json_value payload) override { m_result = std::move(payload); }
     void fail(addon::Result_status, std::string reason, std::string) override
     {
-        throw std::runtime_error("Unexpected launch preparation failure: " + reason);
+        m_failure = std::move(reason);
     }
-    bool finished() const override { return m_result.has_value(); }
+    bool finished() const override { return m_result.has_value() || m_failure.has_value(); }
+    const std::optional<std::string>& failure() const { return m_failure; }
     addon::Launch_patch result() const
     {
         require(m_result.has_value(), "Preparation must finish with a response");
@@ -200,6 +201,7 @@ public:
 private:
     addon::Invoke_request m_request;
     std::optional<addon::Json_value> m_result;
+    std::optional<std::string> m_failure;
 };
 
 class Temporary_program
@@ -284,7 +286,54 @@ void launch_preparation(const char* executable)
         require(patch.disposition && !patch.disposition->prepared && !patch.argv && patch.set.empty(),
             "Unsupported or incomplete invocation shapes retain the unchanged ordinary launcher");
     }
+    request.initial_prompt = addon::Initial_prompt_request{
+        "Logonomic continuation: read the brief with café and 'quotes'; preserve $() literally.",
+        program.directory() + "/brief.md"};
+    patch = prepare(" --model native/exact --no-session", {"--model", "native/exact", "--no-session"});
+    require(patch.argv && patch.argv->at(patch.argv->size() - 2) == "--" &&
+        patch.argv->back() == request.initial_prompt->text &&
+        addon::validate_initial_prompt_acknowledgment(request.initial_prompt, patch, nullptr),
+        "A fresh literal launch must submit exactly one host prompt and acknowledge its byte digest");
+    require(patch.set.empty() && patch.unset.empty(), "Initial prompt preparation cannot rewrite native policy or credentials");
+    patch = prepare(" --system-prompt --resume", {"--system-prompt", "--resume"});
+    require(patch.initial_prompt.has_value(), "A flag-shaped scalar value is not a session selector");
+    for (const auto* text : {"@file is literal message text", "--flag is literal message text", "  Preserve edge spaces  "}) {
+        request.initial_prompt->text = text;
+        patch = prepare("", {});
+        require(patch.argv->back() == text && addon::validate_initial_prompt_acknowledgment(request.initial_prompt, patch, nullptr),
+            "The native end-of-options boundary must preserve flag/attachment-shaped text and spaces");
+    }
+    const auto unavailable = [&](const std::string& script_tail, const std::vector<std::string>& tail) {
+        request.launcher = {'"' + program.program() + '"' + script_tail, "direct", ""};
+        request.launcher_argv = {program.program()};
+        request.launcher_argv.insert(request.launcher_argv.end(), tail.begin(), tail.end());
+        Invocation_fixture context(request);
+        omp::handle_launch_preparation(context);
+        require(context.failure() == "initial_prompt_unavailable",
+            "An uncarriable initial prompt must fail explicitly instead of falling back to an ordinary launch");
+    };
+    for (const auto* text : {"/command would be expanded", "use ^provider/model", "a^b is conservatively unclassified"}) {
+        request.initial_prompt->text = text;
+        unavailable("", {});
+    }
+    request.initial_prompt->text = "Read the exact continuation brief.";
+    for (const auto& pair : {std::pair{" --continue", std::vector<std::string>{"--continue"}},
+             {" --resume exact", {"--resume", "exact"}}, {" --session exact", {"--session", "exact"}},
+             {" --restore exact", {"--restore", "exact"}}, {" --fork exact", {"--fork", "exact"}},
+             {" --goal objective", {"--goal", "objective"}}, {" existing-prompt", {"existing-prompt"}},
+             {" @file", {"@file"}}, {" --mode rpc", {"--mode", "rpc"}},
+             {" --unknown flag", {"--unknown", "flag"}}, {" --model", {"--model"}}}) {
+        unavailable(pair.first, pair.second);
+    }
+    std::string many_flags;
+    const std::vector<std::string> too_many(63, "--no-title");
+    for (const auto& argument : too_many) {
+        many_flags += " " + argument;
+    }
+    unavailable(many_flags, too_many);
     request.declared_assets.clear();
+    unavailable("", {});
+    request.initial_prompt.reset();
     patch = prepare("", {});
     require(!patch.disposition->prepared, "A missing adopted asset capability cannot enable lifecycle promises");
 }

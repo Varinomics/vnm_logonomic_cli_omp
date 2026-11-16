@@ -23,7 +23,7 @@ Context and working-directory evidence is specified in
 | Context occupancy and compactions | Implemented | `context-state@2` uses native occupancy measurements and successful installed compaction events; missing measurements remain unknown. A real root turn verified occupancy; installed compaction has its own acceptance check. |
 | Native working directory reporting | Implemented | `execution-context@1` samples native `ctx.cwd` at public activation, turn, message and compaction events; no immediate idle-change notification is promised. |
 | Host wake | Not implemented | Instruction delivery alone does not initiate a native turn. An attached, activation-scoped native delivery endpoint is required. |
-| Interactive startup prompt adaptation | Not implemented | The current preparation grammar refuses positional prompts. Native prompt/attachment boundaries must be preserved when inserting the extension. |
+| Interactive startup prompt adaptation | Implemented | `interactive-initial-prompt@1` carries one exact host-authored first user message after native `--` on fresh supported launches. Existing launcher prompts/attachments, session selectors, goals and text subject to native command/model-mention expansion are explicitly unavailable. |
 | Structured/delegated task execution | Implemented | Native RPC v2 prompt result plus settled evidence; host retains process cancellation and budget authority. |
 | Read-only structured/delegated work | Unavailable | Native approval modes and tool lists do not establish a read-only execution boundary for extensions, shell tools, or user policy. |
 | Exact-record interactive resume | Unavailable | Native path resume can follow a newer continuation or fork a moved conversation; path alone is not exact native identity. |

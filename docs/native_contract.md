@@ -46,6 +46,33 @@ The native source contracts are
 and the extension-loading path in
 [`main.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/main.ts).
 
+### Host initial prompt
+
+`interactive-initial-prompt@1` adds a host-authored first user message to a fresh
+supported invocation. The existing launcher must contain only understood
+interactive options, with no positional prompt, `@file`, resume/session/restore,
+continue, fork or goal selector. Preparation appends the package extension,
+then native `--`, then the complete requested text as one argument. Native
+`parseArgs` treats that final argument literally, and the interactive startup
+loop in `main.ts` submits each positional independently to `session.prompt`.
+The result acknowledges SHA-256 of the exact requested bytes and is checked
+against the SDK's full replacement-argument bounds. An uncarriable request
+returns `initial_prompt_unavailable` instead of an unchanged launch.
+
+Native `AgentSession` expands leading slash commands/templates and `^` model
+mentions before creating a user message. Leading slash text and any caret are
+therefore unavailable for this exact-text capability; unclassified caret forms
+are conservatively refused. Flag- and attachment-shaped text after `--`, quotes,
+Unicode and edge spaces remain literal. The referenced brief is not read or
+modified by preparation. The native `read` tool accepts absolute paths, subject
+to the user's existing tool/approval choices; this acknowledgment does not
+promise that the model will read the brief.
+
+These boundaries follow `cli/initial-message.ts`, `main.ts`,
+`AgentSession.#dispatchPrompt` and `session/model-mentions.ts` in the inspected
+revision. Existing user configuration and extensions retain native behavior;
+the package does not replace that policy to manufacture a fresh-message promise.
+
 ## Interactive observations
 
 | Native evidence | Package observation | Scope and qualification |
