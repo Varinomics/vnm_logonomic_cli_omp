@@ -4,7 +4,7 @@ import { nestedTaskSnapshots } from "../package/assets/native_children.ts";
 
 // Fixtures follow shared-events.ts, extensions/types.ts, and the public
 // task:subagent:lifecycle contract at the recorded upstream source revision.
-function harness(transport, childState = false) {
+function harness(transport, childState = false, catalogState = false) {
     const handlers = new Map();
     const channels = new Map();
     const delivered = [];
@@ -17,15 +17,18 @@ function harness(transport, childState = false) {
     installExtension(pi, async (request, signal) => {
         delivered.push(structuredClone(request));
         const reply = transport ? await transport(request, signal) : { committed: true, accepted: true };
-        return reply && childState ? { ...reply, child_state_version: 1 } : reply;
+        return reply ? { ...reply, ...(childState ? { child_state_version: 1 } : {}),
+            ...(catalogState ? { model_catalog_version: 1 } : {}) } : reply;
     });
     const state = { id: "session-A", file: "/sessions/A.jsonl", idle: true,
         cwd: "/work/project/nested dir", usage: { tokens: 1200, contextWindow: 16000, percent: 7.5 },
-        model: { provider: "native-provider", id: "native-model" }, effort: "off" };
+        model: { provider: "native-provider", id: "native-model" }, effort: "off",
+        catalog: [{ provider: "native-provider", id: "native-model", reasoning: false }], catalogRefresh: undefined };
     const ctx = { agent: { kind: "main", id: "Main", name: "main", depth: 0 }, hasUI: true,
         sessionManager: { getSessionId: () => state.id, getSessionFile: () => state.file },
         get cwd() { return state.cwd; }, getContextUsage: () => state.usage,
         get model() { return state.model; },
+        models: { list: () => state.catalog }, modelRegistry: { awaitBackgroundRefresh: () => state.catalogRefresh?.() },
         setInterval(callback, interval) { const timer = {}; timers.set(timer, { callback, interval }); return timer; },
         clearTimer(timer) { timers.delete(timer); },
         isIdle: () => state.idle };
@@ -475,5 +478,43 @@ assert.equal(cancelledStall, true, "the bounded shutdown drain cancels a helper 
 assert.deepEqual(stalled.delivered.map(request => request.name),
     ["session_start", "agent_start", "logonomic_observation_lost"],
     "shutdown budget exhaustion reports observation loss without fabricating completion");
+
+const catalogs = harness(undefined, false, true);
+await catalogs.emit("session_start");
+const firstCatalog = catalogs.delivered.find(request => request.name === "model_catalog");
+assert.equal(firstCatalog.body.catalog.total_count, 1);
+assert.equal(firstCatalog.body.catalog.models[0].model, "native-model");
+await catalogs.emit("agent_start");
+assert.equal(catalogs.delivered.filter(request => request.name === "model_catalog").length, 1,
+    "An unchanged available-model snapshot is not repeatedly transported at turn boundaries");
+await catalogs.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "stop" }] });
+catalogs.state.catalog.push({ provider: "native-provider", id: "new-model", reasoning: true });
+for (let tick = 0; tick < 14; ++tick) await catalogs.tick();
+assert.equal(catalogs.delivered.filter(request => request.name === "model_catalog").length, 1);
+await catalogs.tick();
+assert.equal(catalogs.delivered.at(-1).body.catalog.total_count, 2,
+    "The managed idle cadence discovers changed public native availability without a model request");
+await catalogs.emit("session_shutdown");
+
+const retiredCatalog = harness(undefined, false, true);
+const refreshes = [];
+retiredCatalog.state.catalogRefresh = () => new Promise(resolve => refreshes.push(resolve));
+await retiredCatalog.emit("session_start");
+await retiredCatalog.emit("agent_start");
+assert.equal(refreshes.length, 1, "One pending native catalog read per activation cannot block root start");
+assert.equal(retiredCatalog.delivered.at(-1).name, "agent_start");
+retiredCatalog.state.id = "session-B";
+await retiredCatalog.emit("session_switch", { reason: "new" });
+assert.equal(refreshes.length, 2);
+refreshes[0]();
+await retiredCatalog.drain();
+assert(!retiredCatalog.delivered.some(request => request.name === "model_catalog"),
+    "A native background refresh cannot transfer a retired activation's catalog authority");
+refreshes[1]();
+await retiredCatalog.drain();
+assert.equal(retiredCatalog.delivered.at(-1).name, "model_catalog");
+assert.equal(retiredCatalog.delivered.at(-1).body.session_id, "session-B");
+await retiredCatalog.emit("session_shutdown");
+assert(!h.delivered.some(request => request.name === "model_catalog"), "Catalog delivery requires host negotiation");
 
 console.log("PASS native extension event, activation, attention, child, context and delivery-loss fixtures");

@@ -88,6 +88,29 @@ facts cannot create child lifecycle, overwrite root context, or complete the
 root's turn. The host independently admits the matching active child and removes
 its live model after departure.
 
+## Available native models
+
+After the host negotiates `model-catalog@1`, the extension samples the public
+`ctx.models.list()` query for the running native profile. This is native
+configured availability, separate from the currently serving model and from the
+native model picker's enabled-model filter. The sampler waits for the native
+registry's existing background refresh without holding a lifecycle callback or
+starting a model request. It includes provider, model ID, and available display
+name or reasoning-support metadata; it excludes authentication and pricing data.
+
+Sampling occurs after an accepted activation, at agent and fallback boundaries,
+and after fifteen managed timer ticks while idle. An unchanged snapshot is not
+transported again. A pending refresh retains its original activation and cannot
+publish into a replacement session or a cleared activation. Only one refresh is
+pending per activation, and catalog deliveries use the bounded optional queue.
+Hosts that do not negotiate the capability receive no catalog samples.
+
+The projection sorts stable provider/model identities and bounds the payload to
+128 rows and 24 KiB before lifecycle framing. `total_count` records the native
+catalog size and `truncated` identifies a partial projection. An unavailable
+public query produces unavailable state. This sampled catalog does not promise
+that every listed model will accept a subsequent request.
+
 ## Native child details and nested Task observations
 
 `child-state@1` adds native state, description, current tool, progress fraction,

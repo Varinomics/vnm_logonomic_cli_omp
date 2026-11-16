@@ -3,13 +3,15 @@ import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { nestedTaskSnapshots } from "./native_children.ts";
+import { sampleNativeCatalog } from "./native_model_catalog.ts";
 import { nativeWakeState, startWakeBridge } from "./native_wake.ts";
 import type { WakeBridge } from "./native_wake.ts";
 
 type Fact = string | boolean | number | Fact[] | { [key: string]: Fact };
 type Facts = Record<string, Fact>;
 type Request = { operation: "event" | "context"; name: string; body: Facts };
-type Reply = { committed: boolean; accepted: boolean; instruction?: string; child_state_version?: number };
+type Reply = { committed: boolean; accepted: boolean; instruction?: string; child_state_version?: number;
+    model_catalog_version?: number };
 type Transport = (request: Request, signal: AbortSignal) => Promise<Reply | undefined>;
 type Activation = {
     sessionId: string;
@@ -25,6 +27,9 @@ type Activation = {
     childLoss?: string;
     childLossReported: boolean;
     interrupted: boolean;
+    catalogEnabled: boolean;
+    catalogPending: boolean;
+    catalogSnapshot?: string;
 };
 type Child = { owner: Activation; sessionFile: unknown; parentToolCallId: unknown; active: boolean;
     modelSnapshot?: string; pendingModel?: string };
@@ -120,7 +125,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // coalescing them cannot consume root lifecycle custody or claim loss.
         // A successful compaction is a distinct event, never coalesced.
         const replaceable = ["message_end", "model_observation", "retry_fallback_applied",
-            "retry_fallback_succeeded", "task:subagent:progress"].includes(name);
+            "retry_fallback_succeeded", "task:subagent:progress", "model_catalog"].includes(name);
         const sampleKey = !lifecycle && replaceable ? `${name}:${extra.agent_id ?? ""}` : "";
         const revision = ++sampleRevision;
         if (sampleKey) latestSamples.set(sampleKey, revision);
@@ -146,6 +151,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 else {
                     if (extra.model && !extra.agent_id) owner.modelSnapshot = JSON.stringify(extra.model);
                     if (reply.child_state_version === 1) owner.childState = true;
+                    if (reply.model_catalog_version === 1) owner.catalogEnabled = true;
                     if (body.child_loss) owner.childLossReported = true;
                 }
                 return reply?.committed === true && reply.accepted === true;
@@ -243,6 +249,21 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         } catch { return modelFacts(undefined, undefined, undefined); }
     };
 
+    const observeCatalog = (owner: Activation, ctx: ExtensionContext): void => {
+        if (!owner.catalogEnabled || owner.catalogPending || owner !== current(ctx) || owner.lost || shuttingDown) return;
+        owner.catalogPending = true;
+        // Public background refresh can outlive this activation. It does not
+        // hold a native lifecycle callback or acquire a replacement's identity.
+        void sampleNativeCatalog(ctx).then(async catalog => {
+            if (owner !== current(ctx) || owner.lost || shuttingDown) return;
+            const signature = JSON.stringify(catalog);
+            if (signature === owner.catalogSnapshot) return;
+            if (await send(owner, "model_catalog", { catalog }, false, () => owner === current(ctx)))
+                owner.catalogSnapshot = signature;
+        }).catch(() => { /* A retired or unavailable optional query cannot fail native lifecycle work. */ })
+            .finally(() => { owner.catalogPending = false; });
+    };
+
     const snapshot = (ctx: ExtensionContext): Facts => {
         let context: Facts = { usage_unavailable: true };
         try {
@@ -264,8 +285,10 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // OMP owns this unref'd timer and also retires it on shutdown. The
         // getter is live for the bound session; this samples no history and
         // never turns isIdle() into completion evidence.
+        let catalogTicks = 0;
         const timer = ctx.setInterval(() => {
             if (shuttingDown || owner !== current(ctx) || owner.lost || !ctx.isIdle()) return;
+            if (++catalogTicks >= 15) { catalogTicks = 0; observeCatalog(owner, ctx); }
             const model = rootModelFacts(ctx);
             const signature = JSON.stringify(model);
             if (signature === (owner.pendingRootModel ?? owner.modelSnapshot)) return;
@@ -286,7 +309,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         stopModelObserver = undefined;
         const owner: Activation = { sessionId, nonce: freshId(), turnId: "", sequence: 0,
             lost: false, lossReported: false, pendingContext: "", childState: false, childLossReported: false,
-            interrupted: false };
+            interrupted: false, catalogEnabled: false, catalogPending: false };
         activation = owner;
         wakeOwner = undefined;
         wakeContext = undefined;
@@ -298,6 +321,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         await send(owner, name, { ...snapshot(ctx), source, ...(previous ? { previous_nonce: previous } : {}),
             ...(identity(sessionFile, 8192) && isAbsolute(sessionFile) ? { session_file: sessionFile } : {}) });
         if (owner === activation && !owner.lost && !shuttingDown) {
+            observeCatalog(owner, ctx);
             observeIdleModel(owner, ctx);
             wakeOwner = owner;
             wakeContext = ctx;
@@ -351,6 +375,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // extension delivery turn on helper I/O can hide its fire-and-forget
         // agent_end behind a concurrent session_shutdown callback.
         void send(owner, "agent_start", snapshot(ctx));
+        observeCatalog(owner, ctx);
     });
     pi.on("agent_end", (event, ctx) => {
         const owner = current(ctx);
@@ -373,6 +398,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         owner.interrupted = reason === "aborted";
         void send(owner, "agent_end", { ...snapshot(ctx), terminal: true, stop_reason: reason });
         owner.turnId = "";
+        observeCatalog(owner, ctx);
     });
 
     pi.on("message_end", (event, ctx) => {
@@ -394,7 +420,10 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     for (const name of ["retry_fallback_applied", "retry_fallback_succeeded"] as const) {
         pi.on(name, (_event, ctx) => {
             const owner = current(ctx);
-            if (owner) void send(owner, name, snapshot(ctx), false);
+            if (owner) {
+                void send(owner, name, snapshot(ctx), false);
+                observeCatalog(owner, ctx);
+            }
         });
     }
 
