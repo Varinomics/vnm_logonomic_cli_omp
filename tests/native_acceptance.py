@@ -64,6 +64,8 @@ def record_metadata(arguments):
     files = {"harness": Path(__file__), "driver": arguments.driver,
         "host_simulator": arguments.host_simulator,
         "native_cli": cli / "dist/cli.js", "bun": bun}
+    if arguments.host_driver is not None:
+        files["host_driver"] = arguments.host_driver
     files.update({"package/" + str(path.relative_to(arguments.package)): path
         for path in arguments.package.rglob("*") if path.is_file()})
     write_json(arguments.artifacts / "metadata.json", {
@@ -392,6 +394,24 @@ class Native_case:
         return request
 
     def host(self, capability, version, operation, payload, name):
+        if self.name == "wake" and (capability == "session-wake" or
+                (capability == "launch-preparation" and "session_wake" in payload)):
+            # The SDK CLI transcript intentionally redacts all private wake
+            # bindings, including the environment path needed for launch. Its
+            # public typed-result API preserves the genuine adapter response.
+            require(self.arguments.host_driver is not None,
+                    "Native wake requires --host-driver pointing at omp_native_host_driver")
+            result = subprocess.run([str(self.arguments.host_driver), str(self.arguments.package)],
+                input=json.dumps({"capability_id": capability, "version": version,
+                    "operation": operation, "payload": payload}), capture_output=True, text=True, timeout=20)
+            require(result.returncode == 0, f"SDK typed native host failed: {result.stderr}")
+            outcome = json.loads(result.stdout)
+            require(outcome.get("status") == "success", f"Actual packaged adapter refused native {name}")
+            # Private binding bytes remain in this process and the native
+            # registration. Evidence records only the invocation's status.
+            write_json(self.root / f"host-{name}.json", {"capability_id": capability,
+                "version": version, "operation": operation, "status": outcome["status"]})
+            return outcome["payload"]
         script = {"script_version": 1, "steps": [{"op": "invoke", "id": "request",
             "capability_id": capability, "version": version, "operation": operation, "payload": payload},
             {"op": "wait_result", "id": "request", "timeout_ms": 8000}, {"op": "shutdown"}]}
@@ -879,6 +899,7 @@ def main():
     parser.add_argument("--driver", type=Path, required=True, help="built omp_rpc_tests executable")
     parser.add_argument("--package", type=Path, required=True, help="assembled logonomic.cli.omp package")
     parser.add_argument("--host-simulator", type=Path, required=True, help="SDK host simulator executable")
+    parser.add_argument("--host-driver", type=Path, help="built omp_native_host_driver; required for private wake outcomes")
     parser.add_argument("--artifacts", type=Path, required=True, help="fresh native evidence directory")
     parser.add_argument("--scenario", choices=("structured", "profile", "delegated", "background", "persistent", "lifecycle",
         "child", "nested-child", "cwd", "initial-prompt", "wake", "idle-model", "compaction", "helper-custody",
@@ -888,6 +909,8 @@ def main():
             "This native acceptance harness requires Linux x86-64")
     for name in ("runtime", "driver", "package", "host_simulator", "artifacts"):
         setattr(arguments, name, getattr(arguments, name).resolve())
+    if arguments.host_driver is not None:
+        arguments.host_driver = arguments.host_driver.resolve()
     arguments.artifacts.mkdir(parents=True, exist_ok=False)
     record_metadata(arguments)
     results = []
