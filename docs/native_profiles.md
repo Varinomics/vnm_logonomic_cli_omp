@@ -129,3 +129,11 @@ installed native `dirs.ts`/`env.ts` provide the dotenv oracle. It covers the
 confirmed BOM/colon redirections, vertical whitespace and newline variants,
 conservative comment/quote refusals, and preserved credential-only syntax.
 It performs no model request or sign-in.
+
+The separate exact-locator acceptance gate passed 18 packaged cases, including
+seven installed native `applyStartupCwd` comparisons on Linux. It confirms HOME
+relocation, CLI/ambient relative history directories, explicit `--cwd`,
+`--allow-home`, inline empty `--cwd=`, and absolute-path independence. The strict
+SDK direct grammar rejects a separately quoted empty argument, so the empty-cwd
+fixture uses the supported inline spelling. Windows traversal and runtime temp
+fallback behavior were not qualified by this Linux gate.

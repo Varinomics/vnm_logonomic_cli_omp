@@ -159,3 +159,11 @@ packaged adapter. It checks copy → rewrite → missing-source retention → re
 and validates the returned cache seals. Its token values are fixture inputs;
 it makes no model request and does not qualify native file-lock persistence or
 real account billing. No native lock is patched or disabled.
+
+The focused exact-locator qualification passed 18 cases on Linux with official
+OMP 18.20.2/Bun 1.4.4. The original unchanged 100-token native fixture counted
+equally through extensionless, custom-suffix and `.jsonl` registry/explicit
+locators. Opaque selectors, unlisted directory files and malformed exact content
+kept their respective exclusion/refusal behavior. Seven actual public native
+startup-helper invocations agreed with the selected relative-history directory.
+The amount is a fixture input, and this gate makes no model request.
