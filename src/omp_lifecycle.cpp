@@ -1,7 +1,9 @@
 #include "omp_lifecycle.h"
+#include "omp_telemetry.h"
 
 #include <logonomic_cli_addon/json_utilities.h>
 
+#include <charconv>
 #include <string_view>
 #include <utility>
 
@@ -34,6 +36,17 @@ bool matches_activation(const addon::Classify_event_request& request)
         request.ledger.current_transition->nonce == json::text(request.event.body, "activation_nonce");
 }
 
+bool sequence(const addon::Json_value& body)
+{
+    const auto value = json::text(body, "sequence");
+    if (value.empty() || (value.size() > 1 && value.front() == '0')) {
+        return false;
+    }
+    std::uint64_t parsed = 0;
+    const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    return result.ec == std::errc{} && result.ptr == value.data() + value.size();
+}
+
 } // namespace
 
 addon::Attention_classification_result classify_native_event(const addon::Classify_event_request& request)
@@ -43,10 +56,10 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
     const auto& name = request.event.name;
     if (!json::only_keys(body, {"session_id", "activation_nonce", "previous_nonce", "event_id", "sequence",
             "turn_id", "source", "session_file", "terminal", "stop_reason", "request_id", "agent_id",
-            "agent_label", "status"}) ||
+            "agent_label", "status", "context", "execution"}) ||
         !identity(body, "session_id") || !identity(body, "event_id") ||
         !identity(body, "turn_id", true) || !identity(body, "request_id", true) ||
-        !identity(body, "agent_id", true) ||
+        !identity(body, "agent_id", true) || !sequence(body) ||
         !addon::is_valid_transition_nonce_hex(json::text(body, "activation_nonce"))) {
         return result;
     }
@@ -89,6 +102,11 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
         }
         if (name == "logonomic_observation_lost") {
             result.base.lifecycle_degradation = addon::Lifecycle_degradation{1, observation.provider_session_id};
+            return result;
+        }
+        if (name == "message_end" || name == "session_compact") {
+            // These optional native samples carry no turn/lifecycle inference.
+            append_native_telemetry(request, result.base);
             return result;
         }
         if (name == "session_shutdown") {
@@ -178,6 +196,7 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
         return {};
     }
     result.base.observations.push_back(std::move(observation));
+    append_native_telemetry(request, result.base);
     return result;
 }
 

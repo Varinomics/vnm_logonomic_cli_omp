@@ -50,7 +50,7 @@ function(omp_target target)
     endif()
 endfunction()
 
-add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp src/omp_lifecycle.cpp src/omp_launcher_approval.cpp)
+add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp src/omp_lifecycle.cpp src/omp_telemetry.cpp src/omp_launcher_approval.cpp)
 target_include_directories(omp_provider PUBLIC src)
 target_link_libraries(omp_provider PUBLIC logonomic_cli_addon_sdk::sdk)
 omp_target(omp_provider)

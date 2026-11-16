@@ -15,9 +15,11 @@ function harness(transport) {
         delivered.push(structuredClone(request));
         return transport ? await transport(request, signal) : { committed: true, accepted: true };
     });
-    const state = { id: "session-A", file: "/sessions/A.jsonl", idle: true };
+    const state = { id: "session-A", file: "/sessions/A.jsonl", idle: true,
+        cwd: "/work/project/nested dir", usage: { tokens: 1200, contextWindow: 16000, percent: 7.5 } };
     const ctx = { agent: { kind: "main", id: "Main", name: "main", depth: 0 }, hasUI: true,
         sessionManager: { getSessionId: () => state.id, getSessionFile: () => state.file },
+        get cwd() { return state.cwd; }, getContextUsage: () => state.usage,
         isIdle: () => state.idle };
     return { handlers, channels, delivered, state, ctx,
         emit: async (name, event = {}, context = ctx) => {
@@ -160,6 +162,44 @@ assert.deepEqual(closing.delivered.map(request => request.name),
     ["session_start", "agent_start", "agent_end", "session_shutdown"],
     "fire-and-forget native terminal notification drains before session shutdown under immediate EOF");
 assert.equal(closing.delivered[1].body.turn_id, closing.delivered[2].body.turn_id);
+
+const telemetry = harness();
+await telemetry.emit("session_start");
+const initialSnapshot = telemetry.delivered[0];
+assert.deepEqual(initialSnapshot.body.context, { used_tokens: 1200, context_window: 16000 });
+assert.deepEqual(initialSnapshot.body.execution, { state: "confirmed", cwd: "/work/project/nested dir" });
+telemetry.state.usage = { tokens: 17000, contextWindow: 16000, percent: 106.25 };
+telemetry.state.cwd = "/work/moved/nested dir";
+await telemetry.emit("message_end", { message: { role: "assistant", usage: { totalTokens: 987654321 } } });
+assert.deepEqual(telemetry.delivered.at(-1).body.context, { used_tokens: 17000, context_window: 16000 },
+    "native current occupancy can exceed capacity; cumulative message billing is never substituted");
+assert.equal(telemetry.delivered.at(-1).body.execution.cwd, "/work/moved/nested dir");
+assert.equal(telemetry.delivered.at(-1).body.activation_nonce, initialSnapshot.body.activation_nonce);
+assert(Number(telemetry.delivered.at(-1).body.sequence) > Number(initialSnapshot.body.sequence));
+telemetry.state.usage = undefined;
+telemetry.state.cwd = "relative-dir";
+await telemetry.emit("agent_start");
+assert.deepEqual(telemetry.delivered.at(-1).body.context, { usage_unavailable: true });
+assert.deepEqual(telemetry.delivered.at(-1).body.execution, { state: "unknown", cwd: "" });
+const beforeCompaction = telemetry.delivered.length;
+await telemetry.emit("auto_compaction_start", {});
+await telemetry.emit("auto_compaction_end", { aborted: false, result: { tokensBefore: 20000 } });
+assert.equal(telemetry.delivered.length, beforeCompaction, "attempt/end notifications do not double-count installed compaction");
+await telemetry.emit("session_compact", { compactionEntry: { id: "compact-42", summary: "private summary" } });
+assert.deepEqual(telemetry.delivered.at(-1).body.context, { usage_unavailable: true, compaction_id: "compact-42" });
+assert(!JSON.stringify(telemetry.delivered).includes("private summary"));
+const priorChildTelemetry = telemetry.delivered.length;
+await telemetry.emit("message_end", { message: { role: "assistant" } }, sub);
+await telemetry.emit("session_compact", { compactionEntry: { id: "child-compaction" } }, sub);
+assert.equal(telemetry.delivered.length, priorChildTelemetry, "a child query never mutates root context occupancy");
+
+const optionalRefusal = harness(request => request.name === "message_end" ? undefined :
+    { committed: true, accepted: true });
+await optionalRefusal.emit("session_start");
+await optionalRefusal.emit("agent_start");
+await optionalRefusal.emit("message_end", { message: { role: "assistant" } });
+await optionalRefusal.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "stop" }] });
+assert.equal(optionalRefusal.delivered.at(-1).name, "agent_end", "optional telemetry refusal cannot quarantine root lifecycle");
 
 let cancelledStall = false;
 const stalled = harness((request, signal) => request.name === "agent_start" ?

@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-type Facts = Record<string, string | boolean>;
+type Fact = string | boolean | number | { [key: string]: Fact };
+type Facts = Record<string, Fact>;
 type Request = { operation: "event" | "context"; name: string; body: Facts };
 type Reply = { committed: boolean; accepted: boolean; instruction?: string };
 type Transport = (request: Request, signal: AbortSignal) => Promise<Reply | undefined>;
@@ -86,8 +87,10 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         ...(owner.turnId ? { turn_id: owner.turnId } : {}), ...extra,
     });
 
-    const send = (owner: Activation, name: string, extra: Facts = {}): Promise<void> => {
+    const send = (owner: Activation, name: string, extra: Facts = {}, lifecycle = true): Promise<void> => {
+        if (!lifecycle && owner.lost) return Promise.resolve();
         const body = facts(owner, extra); // Capture before any asynchronous work.
+        if (queued >= 64 && !lifecycle) return Promise.resolve();
         if (++queued > 64) owner.lost = true;
         const work = pending.then(async () => {
             --queued;
@@ -98,13 +101,30 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
             try {
                 const reply = await transport({ operation: "event",
                     name: owner.lost ? "logonomic_observation_lost" : name, body }, controller.signal);
-                if (!reply?.committed || !reply.accepted) owner.lost = true;
-                else if (owner.lost) owner.lossReported = true;
-            } catch { owner.lost = true; }
+                if (!reply?.committed || !reply.accepted) {
+                    if (lifecycle) owner.lost = true;
+                } else if (owner.lost) owner.lossReported = true;
+            } catch { if (lifecycle) owner.lost = true; }
             finally { if (running === controller) running = undefined; }
         });
         pending = work.catch(() => {});
         return pending;
+    };
+
+    const snapshot = (ctx: ExtensionContext): Facts => {
+        let context: Facts = { usage_unavailable: true };
+        try {
+            const usage = ctx.getContextUsage();
+            if (usage && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0 &&
+                Number.isSafeInteger(usage.contextWindow) && usage.contextWindow > 0) {
+                // This native query is current occupancy, including native
+                // estimates between provider anchors; billing totals are not.
+                context = { used_tokens: usage.tokens, context_window: usage.contextWindow };
+            }
+        } catch { /* An unavailable optional query never blocks native work. */ }
+        const cwd = ctx.cwd;
+        return { context, execution: identity(cwd, 4096) && isAbsolute(cwd) ?
+            { state: "confirmed", cwd } : { state: "unknown", cwd: "" } };
     };
 
     const activate = async (name: string, source: string, ctx: ExtensionContext): Promise<void> => {
@@ -118,7 +138,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         children.clear();
         attention.clear();
         const sessionFile = ctx.sessionManager.getSessionFile();
-        await send(owner, name, { source, ...(previous ? { previous_nonce: previous } : {}),
+        await send(owner, name, { ...snapshot(ctx), source, ...(previous ? { previous_nonce: previous } : {}),
             ...(identity(sessionFile, 8192) && isAbsolute(sessionFile) ? { session_file: sessionFile } : {}) });
     };
 
@@ -161,7 +181,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // Capture and queue observations synchronously. Holding the native
         // extension delivery turn on helper I/O can hide its fire-and-forget
         // agent_end behind a concurrent session_shutdown callback.
-        void send(owner, "agent_start");
+        void send(owner, "agent_start", snapshot(ctx));
     });
     pi.on("agent_end", (event, ctx) => {
         const owner = current(ctx);
@@ -181,8 +201,25 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // session_stop is a veto gate and is deliberately never observed here.
         const last = [...event.messages].reverse().find(message => message.role === "assistant");
         const reason = last && "stopReason" in last && typeof last.stopReason === "string" ? last.stopReason : "";
-        void send(owner, "agent_end", { terminal: true, stop_reason: reason });
+        void send(owner, "agent_end", { ...snapshot(ctx), terminal: true, stop_reason: reason });
         owner.turnId = "";
+    });
+
+    pi.on("message_end", (event, ctx) => {
+        const owner = current(ctx);
+        if (owner && event.message.role === "assistant")
+            void send(owner, "message_end", snapshot(ctx), false);
+    });
+    pi.on("session_compact", (event, ctx) => {
+        const owner = current(ctx);
+        if (!owner) return;
+        const extra = snapshot(ctx);
+        // Native emits this only after appending the entry and installing its
+        // rebuilt live context. The durable entry id deduplicates redelivery;
+        // a start/attempt/auto_compaction_end is not a second success signal.
+        (extra.context as Facts).compaction_id = identity(event.compactionEntry?.id, 240) ?
+            event.compactionEntry.id : "";
+        void send(owner, "session_compact", extra, false);
     });
 
     const requestAttention = (name: string, id: string, ctx: ExtensionContext) => {
