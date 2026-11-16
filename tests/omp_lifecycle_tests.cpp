@@ -270,6 +270,11 @@ void root_and_child_models()
     const auto changed = checked(request).base.model_updates.front();
     require(addon::apply_model_update(state, changed) && !state.reasoning_effort && state.provider == "native-fallback",
         "A new native model replaces the complete previous snapshot, including now-unknown effort");
+    request.event.name = "model_observation";
+    const auto idle = checked(request);
+    require(idle.base.classification == addon::Classification::IGNORED && idle.base.observations.empty() &&
+        idle.base.model_updates.size() == 1, "A native idle getter sample changes no root lifecycle or completion state");
+    request.event.name = "agent_start";
     request.event.body.set("activation_nonce", addon::Json_value(nonce_b));
     require(checked(request).base.model_updates.empty(), "A different root activation cannot update the model");
     request.event.body.set("activation_nonce", addon::Json_value(nonce_a));

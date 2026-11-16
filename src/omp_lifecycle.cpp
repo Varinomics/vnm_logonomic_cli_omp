@@ -104,7 +104,7 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
             result.base.lifecycle_degradation = addon::Lifecycle_degradation{1, observation.provider_session_id};
             return result;
         }
-        if (name == "message_end" || name == "session_compact" || name == "task:subagent:progress" ||
+        if (name == "message_end" || name == "session_compact" || name == "model_observation" || name == "task:subagent:progress" ||
             name == "retry_fallback_applied" || name == "retry_fallback_succeeded") {
             // These optional native samples carry no turn/lifecycle inference.
             append_native_telemetry(request, result.base);

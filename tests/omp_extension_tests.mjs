@@ -7,6 +7,7 @@ function harness(transport) {
     const handlers = new Map();
     const channels = new Map();
     const delivered = [];
+    const timers = new Map();
     const pi = {
         on(name, handler) { handlers.set(name, handler); },
         events: { on(name, handler) { channels.set(name, handler); return () => channels.delete(name); } },
@@ -23,8 +24,10 @@ function harness(transport) {
         sessionManager: { getSessionId: () => state.id, getSessionFile: () => state.file },
         get cwd() { return state.cwd; }, getContextUsage: () => state.usage,
         get model() { return state.model; },
+        setInterval(callback, interval) { const timer = {}; timers.set(timer, { callback, interval }); return timer; },
+        clearTimer(timer) { timers.delete(timer); },
         isIdle: () => state.idle };
-    return { handlers, channels, delivered, state, ctx,
+    return { handlers, channels, delivered, state, ctx, timers,
         emit: async (name, event = {}, context = ctx) => {
             const result = await handlers.get(name)?.({ type: name, ...event }, context);
             await new Promise(resolve => setImmediate(resolve));
@@ -32,6 +35,7 @@ function harness(transport) {
         },
         child: event => channels.get("task:subagent:lifecycle")?.(event),
         progress: event => channels.get("task:subagent:progress")?.(event),
+        tick: async () => { for (const timer of timers.values()) timer.callback(); await new Promise(resolve => setImmediate(resolve)); },
         drain: () => new Promise(resolve => setImmediate(resolve)) };
 }
 
@@ -308,6 +312,36 @@ await concurrentLoss.drain();
 assert.deepEqual(concurrentLoss.delivered.map(request => request.name),
     ["session_start", "agent_start", "message_end", "logonomic_observation_lost"],
     "only an acknowledged dispatched loss notification can close the loss-reporting obligation");
+
+const idleModels = harness();
+await idleModels.emit("session_start");
+assert.equal(idleModels.timers.size, 1, "one native-owned model observer belongs to the activation");
+assert.equal([...idleModels.timers.values()][0].interval, 1000);
+await idleModels.tick();
+assert.equal(idleModels.delivered.length, 1, "unchanged idle model queries cause no helper traffic");
+idleModels.state.model = { provider: "idle-provider", id: "idle-model" };
+idleModels.state.effort = "high";
+await idleModels.tick();
+assert.equal(idleModels.delivered.at(-1).name, "model_observation");
+assert.deepEqual(idleModels.delivered.at(-1).body.model,
+    { state: "confirmed", provider: "idle-provider", model: "idle-model", reasoning_effort: "high" });
+assert.equal(idleModels.delivered.at(-1).body.turn_id, undefined,
+    "an idle model selection observation is never a root turn or completion");
+const changedCount = idleModels.delivered.length;
+await idleModels.tick();
+assert.equal(idleModels.delivered.length, changedCount);
+const staleTimer = [...idleModels.timers.values()][0].callback;
+const oldModelNonce = idleModels.delivered.at(-1).body.activation_nonce;
+await idleModels.emit("session_clear");
+assert.equal(idleModels.timers.size, 1, "same-ID clear retires the old timer before installing its replacement");
+idleModels.state.model = { provider: "new-activation", id: "new-model" };
+staleTimer();
+await idleModels.drain();
+assert.equal(idleModels.delivered.at(-1).name, "session_clear", "retired activation timer callbacks have no delivery authority");
+await idleModels.tick();
+assert.notEqual(idleModels.delivered.at(-1).body.activation_nonce, oldModelNonce);
+await idleModels.emit("session_shutdown");
+assert.equal(idleModels.timers.size, 0, "shutdown explicitly retires the native-managed observer");
 
 let cancelledStall = false;
 const stalled = harness((request, signal) => request.name === "agent_start" ?

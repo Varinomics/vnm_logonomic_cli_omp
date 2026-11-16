@@ -16,6 +16,8 @@ type Activation = {
     lost: boolean;
     lossReported: boolean;
     pendingContext: string;
+    modelSnapshot?: string;
+    pendingRootModel?: string;
 };
 
 const freshId = () => randomBytes(16).toString("hex");
@@ -78,6 +80,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     let shutdownDrainExpired = false;
     let running: AbortController | undefined;
     let contextRequest: AbortController | undefined;
+    let stopModelObserver: (() => void) | undefined;
     const children = new Map<string, { owner: Activation; sessionFile: unknown;
         parentToolCallId: unknown; modelSnapshot?: string; pendingModel?: string }>();
     const attention = new Map<string, Activation>();
@@ -120,6 +123,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 if (!reply?.committed || !reply.accepted) {
                     if (lifecycle) owner.lost = true;
                 } else if (sentLoss) owner.lossReported = true;
+                else if (extra.model && !extra.agent_id) owner.modelSnapshot = JSON.stringify(extra.model);
                 return reply?.committed === true && reply.accepted === true;
             } catch { if (lifecycle) owner.lost = true; return false; }
             finally { if (running === controller) running = undefined; }
@@ -134,6 +138,14 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
             ...(identity(effort, 128) ? { reasoning_effort: effort } : {}),
         } : { state: "unknown", provider: "", model: "" };
 
+    const rootModelFacts = (ctx: ExtensionContext): Facts => {
+        try {
+            let effort: unknown;
+            try { effort = pi.getThinkingLevel?.(); } catch { /* Unknown reasoning does not erase a known model. */ }
+            return modelFacts(ctx.model?.provider, ctx.model?.id, effort);
+        } catch { return modelFacts(undefined, undefined, undefined); }
+    };
+
     const snapshot = (ctx: ExtensionContext): Facts => {
         let context: Facts = { usage_unavailable: true };
         try {
@@ -145,15 +157,27 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 context = { used_tokens: usage.tokens, context_window: usage.contextWindow };
             }
         } catch { /* An unavailable optional query never blocks native work. */ }
-        let model: Facts = modelFacts(undefined, undefined, undefined);
-        try {
-            let effort: unknown;
-            try { effort = pi.getThinkingLevel?.(); } catch { /* Unknown reasoning does not erase a known model. */ }
-            model = modelFacts(ctx.model?.provider, ctx.model?.id, effort);
-        } catch { /* Native query loss explicitly withdraws this optional fact. */ }
         const cwd = ctx.cwd;
-        return { context, model, execution: identity(cwd, 4096) && isAbsolute(cwd) ?
+        return { context, model: rootModelFacts(ctx), execution: identity(cwd, 4096) && isAbsolute(cwd) ?
             { state: "confirmed", cwd } : { state: "unknown", cwd: "" } };
+    };
+
+    const observeIdleModel = (owner: Activation, ctx: ExtensionContext): void => {
+        if (typeof ctx.setInterval !== "function" || typeof ctx.clearTimer !== "function") return;
+        // OMP owns this unref'd timer and also retires it on shutdown. The
+        // getter is live for the bound session; this samples no history and
+        // never turns isIdle() into completion evidence.
+        const timer = ctx.setInterval(() => {
+            if (shuttingDown || owner !== current(ctx) || owner.lost || !ctx.isIdle()) return;
+            const model = rootModelFacts(ctx);
+            const signature = JSON.stringify(model);
+            if (signature === (owner.pendingRootModel ?? owner.modelSnapshot)) return;
+            owner.pendingRootModel = signature;
+            void send(owner, "model_observation", { model }, false).finally(() => {
+                if (owner.pendingRootModel === signature) owner.pendingRootModel = undefined;
+            });
+        }, 1000);
+        stopModelObserver = () => ctx.clearTimer(timer);
     };
 
     const activate = async (name: string, source: string, ctx: ExtensionContext): Promise<void> => {
@@ -161,6 +185,8 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const sessionId = ctx.sessionManager.getSessionId();
         if (!identity(sessionId)) return;
         const previous = activation?.nonce;
+        stopModelObserver?.();
+        stopModelObserver = undefined;
         const owner: Activation = { sessionId, nonce: freshId(), turnId: "", sequence: 0,
             lost: false, lossReported: false, pendingContext: "" };
         activation = owner;
@@ -170,6 +196,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const sessionFile = ctx.sessionManager.getSessionFile();
         await send(owner, name, { ...snapshot(ctx), source, ...(previous ? { previous_nonce: previous } : {}),
             ...(identity(sessionFile, 8192) && isAbsolute(sessionFile) ? { session_file: sessionFile } : {}) });
+        if (owner === activation && !owner.lost && !shuttingDown) observeIdleModel(owner, ctx);
     };
 
     pi.on("session_start", (_event, ctx) => activate("session_start", "load", ctx));
@@ -344,6 +371,8 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         if (!isRoot(ctx)) return;
         const owner = current(ctx);
         shuttingDown = true;
+        stopModelObserver?.();
+        stopModelObserver = undefined;
         unsubscribeLifecycle();
         unsubscribeProgress();
         contextRequest?.abort();

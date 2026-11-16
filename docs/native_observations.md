@@ -54,9 +54,13 @@ known level with unknown, while literal native `off` remains `off`. Requested
 launch aliases and delegated selection arguments are not observations.
 
 Native `model_changed` and `thinking_level_changed` notifications are not exposed
-as extension hooks in this source revision. Idle model or thinking changes are
-therefore reflected by the next public sample rather than an immediate change
-notification. Each SDK update names the native observation boundary.
+as extension hooks in this source revision. Where the native managed timer API
+is available, the extension therefore samples the public live model/thinking
+getters once per second while idle and sends only changed snapshots. The native
+timer is unreferenced, tied to the root activation, and retired on clear, switch,
+or shutdown. This lightweight observation never infers completion or starts a
+turn. Older native bindings without managed timers retain event-bound samples.
+Each SDK update names its observation boundary.
 
 For direct Task/eval children, the public progress snapshot supplies
 `resolvedModelIdentity` and `resolvedThinkingLevel`. The executor obtains this
