@@ -207,7 +207,8 @@ instead of silently substituting a different level. See `omp_rpc_tests` and
 the public
 [`docs/rpc.md`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/docs/rpc.md)
 for readiness, terminal, error and model-selection contracts. The add-on does
-not call `get_available_models` or provide a model catalog. The inspected
+not call `get_available_models`; the separate live [model catalog](model_catalog.md)
+uses the public extension registry query. The inspected
 `get_state.model` and `thinkingLevel` fields validate explicit task choices;
 they are not live interactive model telemetry.
 

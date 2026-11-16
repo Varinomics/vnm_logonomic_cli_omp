@@ -31,6 +31,7 @@ remains an allowlist when the package module is added.
 | Root working and completion | Native agent-loop events and continuation decisions, including the terminal callback before prompt unwinding. Successful, failed and interrupted outcomes remain distinct. |
 | Context and working directory | Native occupancy, installed compaction events and current directory observations, correlated to the active conversation. |
 | Active model observations | Root provider/model/reasoning samples, including idle selection changes, and serving-model facts for admitted direct children through optional `model-state@1`. |
+| Available model catalog | Optional live configured-model inventory from the running native profile, with explicit partial counts and a Session details list. |
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
 | Task/eval children | Native child identities and start/stop events, plus optional descriptions, progress, outcomes and bounded nested Task snapshots through `child-state@1`. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |
@@ -49,7 +50,10 @@ of manufacturing success.
 
 Model selection applies to delegated tasks. Interactive model observations use
 the optional `model-state@1` host contract; older hosts can still use the other
-features. This version does not list available models.
+features. Optional `model-catalog@1` supplies the running profile's configured
+model set; it is separate from current serving-model facts and verified model
+access. See [the model catalog contract](docs/model_catalog.md) for sampling,
+bounds and the difference from the native model picker.
 Yolofy adds native `--yolo`; Unyolofy removes recognized invocation bypasses.
 Unyolofy preserves saved native policy, which may itself permit tools without
 asking. Neither action edits the native configuration or imposes a new policy.

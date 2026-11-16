@@ -10,14 +10,64 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shlex
 import signal
 import subprocess
+import sys
 import time
 
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def wrapper_fixture():
+    """Real helper client transport, with actual packaged adapter classification."""
+    descriptor = json.loads(Path(sys.argv[2]).read_text())
+    arguments = sys.argv[3:]
+    body = json.loads(sys.stdin.read()) if "--args-stdin" in arguments else None
+    state_path = Path(descriptor["state"])
+    state = json.loads(state_path.read_text()) if state_path.exists() else {
+        "ledger": {"current_epoch": 0, "current_transition": None}}
+    entry = {"argv": arguments, "body": body, "pid": os.getpid()}
+    reply = {"accepted": True, "epoch": state["ledger"]["current_epoch"]}
+    if arguments[:2] == ["provider-event", "deliver"]:
+        event = body["event"]
+        request = {"capability_id": "helper-ingress", "version": 2, "operation": "classify_event", "payload": {
+            "event": event, "ledger": state["ledger"], "transition_nonce": body["transition_nonce"],
+            "model_catalog": {"version": 1}}}
+        outcome = subprocess.run([descriptor["driver"], descriptor["package"]], input=json.dumps(request),
+            capture_output=True, text=True, timeout=5)
+        if outcome.returncode != 0:
+            raise RuntimeError("Actual packaged host classification failed: " + outcome.stderr)
+        decoded = json.loads(outcome.stdout)
+        assert decoded["status"] == "success", decoded
+        classification = decoded["payload"]
+        entry["classification"] = classification
+        if classification["classification"] == "transition":
+            observation = classification["observations"][0]
+            state["ledger"] = {"current_epoch": 1, "current_transition": {"kind": "start",
+                "provider_session_id": observation["provider_session_id"], "nonce": body["transition_nonce"]}}
+            assert classification["helper_response"]["model_catalog_version"] == 1
+        if event["name"] == "model_catalog":
+            assert classification["classification"] == "ignore" and not classification["observations"], classification
+            assert "snapshot" in classification["model_catalog"] and "failure" not in classification["model_catalog"]
+            state["catalog_key"] = body["idempotency_key"]
+        reply = {"accepted": True, "epoch": state["ledger"]["current_epoch"]}
+        if "helper_response" in classification:
+            reply["helper_response"] = classification["helper_response"]
+    elif arguments[:2] == ["provider-event", "acknowledge"]:
+        if len(arguments) >= 3 and arguments[2] == state.get("catalog_key"):
+            state["catalog_acknowledged"] = True
+    else:
+        raise AssertionError("Unexpected native catalog helper operation")
+    with Path(descriptor["journal"]).open("a", encoding="utf-8") as journal:
+        journal.write(json.dumps(entry) + "\n")
+    temporary = state_path.with_suffix(".tmp")
+    write_json(temporary, state)
+    temporary.replace(state_path)
+    print(json.dumps(reply), flush=True)
 
 
 def run_case(arguments, name, count):
@@ -59,12 +109,28 @@ def run_case(arguments, name, count):
         "PI_NO_TITLE": "1", "PI_NO_PTY": "1", "CATALOG_PROBE_REPORT": str(report)}
     command = [str(bun), str(cli), "--mode", "rpc", "--no-ui", "--no-session", "--offline",
         "--provider", "catalog-fixture", "--model", "model-000", "--extension", str(extension)]
+    state_path = root / "helper-state.json"
+    journal_path = root / "helper-journal.jsonl"
+    if arguments.package:
+        wrapper = root / "vnmctl-fixture"
+        descriptor = root / "helper-descriptor.json"
+        write_json(descriptor, {"driver": str(arguments.host_driver), "package": str(arguments.package),
+            "state": str(state_path), "journal": str(journal_path)})
+        wrapper.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(value) for value in
+            (sys.executable, str(Path(__file__).resolve()), "--wrapper-fixture", str(descriptor))) + ' "$@"\n')
+        wrapper.chmod(0o755)
+        environment.update({"LOGONOMIC_VNMCTL_PATH": str(wrapper), "LOGONOMIC_SESSION_CAPABILITY": "a" * 64,
+            "LOGONOMIC_PROVIDER_PACKAGE_ID": "logonomic.cli.omp", "LOGONOMIC_PROVIDER_GENERATION_DIGEST": "b" * 64,
+            "LOGONOMIC_PROVIDER_GENERATION_NONCE": "c" * 32,
+            "LOGONOMIC_PROVIDER_HELPERS_DIR": str(arguments.package / "helpers")})
+        command.extend(["--extension", str(arguments.package / "assets/logonomic.ts")])
     write_json(root / "invocation.json", {"argv": command, "environment": environment})
     process = subprocess.Popen(command, cwd=root / "workspace", env=environment, stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     streams = {"stdout": bytearray(), "stderr": bytearray()}
     pending = bytearray()
     ready = False
+    input_closed = False
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
@@ -89,7 +155,10 @@ def run_case(arguments, name, count):
                         frame = json.loads(line)
                         if frame.get("type") == "ready" and not ready:
                             ready = True
-                            process.stdin.close()
+            acknowledged = state_path.exists() and json.loads(state_path.read_text()).get("catalog_acknowledged")
+            if ready and not input_closed and (not arguments.package or acknowledged):
+                process.stdin.close()
+                input_closed = True
         assert process.wait(timeout=5) == 0, "Native OMP did not exit cleanly after EOF"
         assert ready and report.is_file(), "The actual extension loader never produced the catalog observation"
     finally:
@@ -113,6 +182,21 @@ def run_case(arguments, name, count):
     result = {"native_models": count, "reported_models": len(catalog["models"]), "native_bytes": observed["native_bytes"],
         "snapshot_bytes": observed["snapshot_bytes"], "helper_request_bytes": helper_bytes,
         "truncated": catalog["truncated"], "native_exit": process.returncode}
+    if arguments.package:
+        journal = [json.loads(line) for line in journal_path.read_text().splitlines()]
+        delivered = [entry for entry in journal if entry["argv"][:2] == ["provider-event", "deliver"]]
+        names = [entry["body"]["event"]["name"] for entry in delivered]
+        assert names[0] == "session_start" and names[-1] == "session_shutdown", names
+        assert "logonomic_observation_lost" not in names, names
+        catalogs = [entry for entry in delivered if entry["body"]["event"]["name"] == "model_catalog"]
+        assert len(catalogs) == 1, names
+        wire = catalogs[0]["classification"]["model_catalog"]["snapshot"]
+        assert all(wire[key] == catalog[key] for key in ("state", "models", "total_count", "truncated")), wire
+        assert wire["provider_session_id"] == delivered[0]["body"]["event"]["body"]["session_id"]
+        assert wire["transition_nonce"] == delivered[0]["body"]["transition_nonce"]
+        assert json.loads(state_path.read_text()).get("catalog_acknowledged"), "Real helper did not acknowledge the catalog"
+        result.update({"actual_helper_and_adapter": True, "catalog_acknowledged": True,
+            "catalog_sequence": wire["sequence"], "native_event_names": names})
     write_json(root / "result.json", result)
     return result
 
@@ -121,15 +205,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", required=True, type=Path)
     parser.add_argument("--artifacts", required=True, type=Path)
-    parser.add_argument("--module", type=Path, default=Path(__file__).resolve().parents[1] / "package/assets/native_model_catalog.ts")
+    parser.add_argument("--module", type=Path)
+    parser.add_argument("--package", type=Path, help="Also run the packaged production extension and helper")
+    parser.add_argument("--host-driver", type=Path, help="omp_native_host_driver for actual packaged classification")
     arguments = parser.parse_args()
     arguments.runtime = arguments.runtime.resolve()
     arguments.artifacts = arguments.artifacts.resolve()
-    arguments.module = arguments.module.resolve()
+    if bool(arguments.package) != bool(arguments.host_driver):
+        parser.error("--package and --host-driver must be supplied together")
+    if arguments.package:
+        arguments.package = arguments.package.resolve()
+        arguments.host_driver = arguments.host_driver.resolve()
+    arguments.module = (arguments.module or
+        (arguments.package / "assets/native_model_catalog.ts" if arguments.package else
+         Path(__file__).resolve().parents[1] / "package/assets/native_model_catalog.ts")).resolve()
     results = {name: run_case(arguments, name, count) for name, count in (("scoped-profile", 3), ("bounded-native", 200))}
     write_json(arguments.artifacts / "result.json", results)
     print(json.dumps(results, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--wrapper-fixture":
+        wrapper_fixture()
+    else:
+        main()
