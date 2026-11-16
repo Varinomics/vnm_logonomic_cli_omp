@@ -185,6 +185,36 @@ void rejection_and_cancellation()
         "Export cannot guess a session file when no captured locator exists");
 }
 
+void internal_developer_projection()
+{
+    // Native AgentSession.#enforcePlanModeBeforeYield persists the exact
+    // developer/attribution:agent shape. Ordinary discussion must survive
+    // compact export without guessing at unclassified assistant/developer text.
+    Fixture fixture;
+    fixture.write(std::string(header) + R"({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":"ordinary user"}}
+{"type":"message","id":"d","parentId":"u","message":{"role":"developer","attribution":"agent","content":[{"type":"text","text":"internal plan reminder"}]}}
+{"type":"message","id":"ud","parentId":"d","message":{"role":"developer","attribution":"user","content":"user-authored developer text"}}
+{"type":"message","id":"unknown","parentId":"ud","message":{"role":"developer","content":"unclassified developer text"}}
+{"type":"message","id":"a","parentId":"unknown","message":{"role":"assistant","content":[{"type":"text","text":"unclassified assistant answer"}]}}
+)");
+    addon::Contract_failure failure;
+    for (const bool compact : {false, true}) {
+        const auto name = compact ? "compact" : "full";
+        auto request = fixture.request(name);
+        request.compact = compact;
+        const auto result = omp::export_conversation(request, {}, &failure);
+        require(result && result->message_count == (compact ? 4 : 5),
+            "Compact export must exclude a source-established internal developer instruction only");
+        const auto content = read(fixture.directory / name / result->file_name);
+        require((content.find("internal plan reminder") != std::string::npos) == !compact &&
+            content.find("ordinary user") != std::string::npos &&
+            content.find("user-authored developer text") != std::string::npos &&
+            content.find("unclassified developer text") != std::string::npos &&
+            content.find("unclassified assistant answer") != std::string::npos,
+            "Full text retains native instructions; compact retains user and unclassified discussion");
+    }
+}
+
 void native_record_size()
 {
     Fixture fixture;
@@ -205,6 +235,7 @@ int main()
         branch_selection();
         content_and_projection();
         rejection_and_cancellation();
+        internal_developer_projection();
         native_record_size();
         return 0;
     }

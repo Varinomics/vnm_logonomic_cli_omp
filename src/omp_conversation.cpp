@@ -133,7 +133,11 @@ std::optional<Message> native_message(const Json& native, addon::Contract_failur
         const bool tool_result = *role == "toolResult";
         const bool custom = *role == "custom" || *role == "hookMessage";
         const bool commentary = *role == "assistant" && stop && *stop == "toolUse";
-        const bool visible = !tool_result && !commentary && (!custom || flag(native, "display"));
+        // AgentSession persists plan/checkpoint reminders as agent-attributed
+        // developer messages. They are internal instructions, not discussion.
+        const auto* attribution = text(native, "attribution");
+        const bool internal_developer = *role == "developer" && attribution && *attribution == "agent";
+        const bool visible = !tool_result && !commentary && !internal_developer && (!custom || flag(native, "display"));
         if (*role == "assistant" && stop && *stop == "stop") {
             result.phase = addon::Conversation_message_phase::FINAL;
         }

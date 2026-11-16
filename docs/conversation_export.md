@@ -47,7 +47,9 @@ placeholder per native message; opaque replay ciphertext is not emitted.
 
 Compact export retains user discussion, final or unclassified assistant text,
 user-visible custom messages, attachment markers and encrypted placeholders.
-Known commentary, reasoning, tools and internal records are excluded. The shared
+Known commentary, reasoning, tools and internal records are excluded. Native
+agent-attributed developer instructions (including persisted plan reminders) are
+internal; user-attributed or unclassified developer text remains visible. The shared
 SDK writer supplies the three formats (`text`, `markdown`, `conversation`),
 literal tool fences, control-character escaping, cancellation and staged output.
 The capability result contains the fixed filename and counts, never the
