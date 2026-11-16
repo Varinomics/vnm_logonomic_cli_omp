@@ -266,7 +266,7 @@ class Native_case:
         settings = {"enabledProviders": ["logonomic-fixture"],
             "telemetry": {"otlpExportEnabled": False}, "marketplace": {"autoUpdate": "off"},
             "power": {"sleepPrevention": "off"}}
-        if name == "initial-prompt":
+        if name in ("initial-prompt", "wake"):
             # The isolated local provider is already configured. The ordinary
             # native setup wizard otherwise waits for a human account choice
             # before main.ts dispatches startup messages; no setup-version or
@@ -290,7 +290,7 @@ class Native_case:
             self.expected_cwd = self.root / "native-cwd"
             self.expected_cwd.mkdir()
             self.argv.extend(["--cwd", str(self.expected_cwd)])
-        if name in ("child", "nested-child", "initial-prompt"):
+        if name in ("child", "nested-child", "initial-prompt", "wake"):
             self.add_native_observer()
         self.transcript = []
 
@@ -303,6 +303,7 @@ class Native_case:
             'export default function(pi) {\n' +
             ' const save = (event, value) => appendFileSync(' + journal + ', JSON.stringify({event, value}) + "\\n");\n' +
             ' pi.on("session_start", (_event, ctx) => save("session_start", {agent:ctx.agent, session:ctx.sessionManager.getSessionId()}));\n' +
+            ' pi.on("agent_start", (_event, ctx) => save("agent_start", {agent:ctx.agent, session:ctx.sessionManager.getSessionId(), pid:process.pid}));\n' +
             ' pi.on("message_start", (event, ctx) => { if(event.message.role === "user") save("user_message", {agent:ctx.agent, session:ctx.sessionManager.getSessionId(), message:event.message}); });\n' +
             ' for (const name of ["task:subagent:lifecycle", "task:subagent:progress", "task:subagent:event"]) pi.events.on(name, value => save(name, value));\n' +
             '}\n', encoding="utf8")
@@ -417,14 +418,20 @@ class Native_case:
         self.transcript.append({"inspection": request["inspection"], "result": response})
         return response, request
 
-    def prepare_interactive(self, initial_prompt=None):
+    def prepare_interactive(self, initial_prompt=None, wake=False):
         request = self.prepare_request(False)
         interactive = {key: value for key, value in request.items() if key not in ("purpose", "prompt_base64")}
-        interactive["declared_assets"] = ["assets/logonomic.ts", "assets/native_children.ts"]
+        interactive["declared_assets"] = json.loads((self.arguments.package /
+            "capabilities/managed-assets@1.json").read_text())["payload"]["assets"]
         interactive["title_instruction"] = HOST_CONTEXT
         interactive["launch_environment"]["effective_environment"] = self.frozen_environment("launch-preparation", 3)
         if initial_prompt is not None:
             interactive["initial_prompt"] = initial_prompt
+        if wake:
+            profile = self.root / "host-profile"
+            profile.mkdir(mode=0o700)
+            interactive["profile_storage"] = {"version": 1, "root": str(profile)}
+            interactive["session_wake"] = {"version": 1}
         patch = self.host("launch-preparation", 3, "prepare", interactive, "interactive")
         require(patch.get("disposition", {}).get("lifecycle_events") is True,
                 "Native interactive launcher did not adopt packaged lifecycle hooks")
@@ -523,8 +530,9 @@ class Native_case:
             brief.write_text("The isolated host continuation brief.\n", encoding="utf8")
             text = f"Logonomic continuation: read {brief}; preserve café, 'quotes' and $() literally."
             self.argv.append("--no-title")
+            wake = self.name == "wake"
             patch, command, environment = self.prepare_interactive(
-                {"version": 1, "text": text, "referenced_file": str(brief)})
+                {"version": 1, "text": text, "referenced_file": str(brief)}, wake=wake)
             require(patch.get("initial_prompt", {}).get("text_sha256") == hashlib.sha256(text.encode()).hexdigest(),
                     "Actual adapter did not acknowledge the exact initial prompt bytes")
             environment["TERM"] = "xterm-256color"
@@ -556,6 +564,46 @@ class Native_case:
                     "The native interactive session did not receive exactly the requested first user message")
             require(len(self.model.requests) == 1 and text in json.dumps(self.model.requests, ensure_ascii=False),
                     "The exact native startup prompt never reached its actual model turn")
+            if wake:
+                offer = patch.get("session_wake", {})
+                require(offer.get("available") is True and "binding" in offer,
+                        "Actual preparation did not bind an available native wake endpoint")
+                start = next(row["body"] for row in self.delivered_events() if row["name"] == "session_start")
+                target = {"session": {"provider_session_id": start["session_id"],
+                    "working_directory": str(self.root / "workspace"), "launcher_argv": self.argv,
+                    "launch_environment": {"platform": "linux-x86_64",
+                        "effective_environment": self.frozen_environment("session-wake", 1)}},
+                    "correlation": {"version": 1, "transition_nonce": start["activation_nonce"]},
+                    "binding": offer["binding"]}
+                ready = False
+                for attempt in range(20):
+                    inspected = self.host("session-wake", 1, "inspect", target, f"wake-inspect-{attempt}")
+                    if inspected.get("available") is True:
+                        ready = True
+                        break
+                    require(inspected.get("reason") in ("unbound_session", "native_busy"),
+                            f"Native wake inspection refused: {inspected}")
+                    time.sleep(0.05)
+                require(ready and len(self.model.requests) == 1, "Read-only native wake inspection never established idle readiness")
+                instruction = "Logonomic: consume the newly committed local fixture mailbox and report completion."
+                notified = self.host("session-wake", 1, "notify", {**target,
+                    "notification_id": "native-mailbox-fixture", "instruction": instruction}, "wake-notify")
+                require(notified == {"disposition": "uncertain", "reason": "native_admission_unacknowledged"},
+                        "Void native aside submission must not overstate synchronous delivery acknowledgment")
+                while sum(row["name"] == "agent_end" for row in self.delivered_events()) < 2:
+                    require(process.poll() is None and time.monotonic() < deadline,
+                            "Actual native wake did not produce a second terminal turn")
+                    time.sleep(0.02)
+                require(len(self.model.requests) == 2 and instruction in json.dumps(self.model.requests[-1]),
+                        "The wake instruction did not reach a second real model request")
+                raw = [json.loads(line) for line in (self.root / "raw-native-events.jsonl").read_text().splitlines()]
+                turns = [row["value"] for row in raw if row["event"] == "agent_start" and
+                         row["value"].get("agent", {}).get("kind") == "main"]
+                require(len(turns) == 2 and all(row["session"] == start["session_id"] and row["pid"] == process.pid for row in turns),
+                        "Native wake must reuse the exact process and session")
+                require(sum(row["event"] == "user_message" for row in raw) == 1 and
+                        sum(row["name"] == "session_start" for row in self.delivered_events()) == 1,
+                        "Native wake cannot restart the session or submit a simulated editor/user prompt")
             # The composer is idle and empty; native Ctrl+D owns orderly exit.
             os.write(master, b"\x04")
             exit_code = process.wait(timeout=8)
@@ -563,7 +611,7 @@ class Native_case:
             require(exit_code == 0, f"Native interactive shutdown exited {exit_code}")
             observed = self.check_observations()
             return {"scenario": self.name, "exit_code": exit_code, "model_requests": len(self.model.requests),
-                    "exact_first_user_message": True, **observed}
+                    "exact_first_user_message": True, **({"same_process_native_wake": True} if wake else {}), **observed}
         finally:
             if process is not None and process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -645,7 +693,7 @@ class Native_case:
                     time.sleep(0.02)
                 require(len(self.model.requests) == baseline_requests == 1,
                         "Observing an idle model change must not start another model request")
-            else:
+            elif self.name == "compaction":
                 prompt("second", "Second isolated turn for the native compaction fixture.")
                 rpc("compact", "compact", customInstructions="Preserve the two isolated fixture requests.")
                 entries = rpc("entries", "get_entries")["entries"]
@@ -666,7 +714,7 @@ class Native_case:
                 require(any(row.get("model") == "alternate" and row.get("reasoning_effort") == "low"
                     for result in classified for row in result.get("model_state", {}).get("updates", [])),
                     "The actual adapter failed to report the idle native model/thinking selection")
-            else:
+            elif self.name == "compaction":
                 require(any(row.get("compacted") is True and row.get("event_id") == "compaction:" + compactions[-1]["id"]
                     for result in classified for row in result.get("context_updates", [])),
                     "The actual adapter failed to report the installed native compaction")
@@ -833,7 +881,7 @@ def main():
     parser.add_argument("--host-simulator", type=Path, required=True, help="SDK host simulator executable")
     parser.add_argument("--artifacts", type=Path, required=True, help="fresh native evidence directory")
     parser.add_argument("--scenario", choices=("structured", "profile", "delegated", "background", "persistent", "lifecycle",
-        "child", "nested-child", "cwd", "initial-prompt", "idle-model", "compaction", "helper-custody",
+        "child", "nested-child", "cwd", "initial-prompt", "wake", "idle-model", "compaction", "helper-custody",
         "fallback-selected", "fallback-preserved", "all"), default="all")
     arguments = parser.parse_args()
     require(sys.platform == "linux" and platform.machine() == "x86_64",
@@ -844,7 +892,7 @@ def main():
     record_metadata(arguments)
     results = []
     for scenario in ("structured", "profile", "delegated", "background", "persistent", "lifecycle", "cwd",
-                     "initial-prompt", "idle-model", "compaction", "child", "nested-child", "helper-custody",
+                     "initial-prompt", "wake", "idle-model", "compaction", "child", "nested-child", "helper-custody",
                      "fallback-selected", "fallback-preserved"):
         if arguments.scenario in (scenario, "all"):
             case = Native_case(arguments, scenario)
@@ -854,9 +902,9 @@ def main():
                     result = {"scenario": scenario, "eof_cancellation": "passed", "deadline_cancellation": "passed"}
                 finally:
                     case.model.close()
-            elif scenario == "initial-prompt":
+            elif scenario in ("initial-prompt", "wake"):
                 result = case.run_initial_prompt()
-            elif scenario in ("idle-model", "compaction"):
+            elif scenario in ("idle-model", "compaction", "cwd"):
                 result = case.run_native_control()
             else:
                 result = case.run(scenario == "delegated" or scenario.startswith("fallback-"))

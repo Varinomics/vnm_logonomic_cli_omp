@@ -77,6 +77,7 @@ checked through the actual adapter handler.
 | `lifecycle` | Actual launch preparation injects the packaged extension. Native root start/turn/end/shutdown and optional samples pass through the packaged helper and actual classifier. The gate requires root model/provider, occupancy and cwd envelopes as well as hidden host-context delivery and immediate RPC shutdown. |
 | `cwd` | The native `--cwd` argument selects a different directory from the host process working directory. Execution-context observations must report the actual native directory. |
 | `initial-prompt` | The actual prepared invocation runs on a PTY, with the ordinary interactive mode. A separate passive public-event observer captures the first native user message; its exact text must equal the host request. One model turn follows, and native Ctrl+D owns shutdown. |
+| `wake` | After that real interactive turn ends, the actual adapter inspects the exact session/activation binding and notifies it once. Despite the appropriately uncertain synchronous return, a second real model request and terminal turn must occur in the same native process/session without editor input or another user message. |
 | `idle-model` | The same extension-loaded native process changes model and thinking through actual public RPC commands while idle. Native state and host-classified model observations must agree, with no additional model request. |
 | `compaction` | Two real local turns precede a native compact command, using the documented soft method and a small retained-tail setting. A real installed compaction entry must match the public event and the classifier's context compaction ID. |
 | `child`, `nested-child` | The local model calls the actual Task tool; children use a distinct configured model. Native starts, stops, returned results, direct-child serving model and child-state parent/outcome records are required. The nested case additionally requires a real grandchild and its observed parent/depth. A task-label model call cannot satisfy child execution. |
@@ -108,6 +109,11 @@ The PTY fixture disables the ordinary first-run setup wizard, startup update
 check and splash through native `startup` settings. Its local provider is already
 configured. This avoids waiting at the provider-setup screen; production
 preparation does not alter these settings or fabricate an authenticated account.
+The distinct-directory scenario uses direct native RPC only as an observation
+driver for the managed interactive extension. Structured task preparation
+intentionally rejects directory overrides, so this gate does not ask it to
+change the host-owned task directory. Neither path changes that production
+scope rule.
 
 ## Qualification boundaries
 
