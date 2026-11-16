@@ -70,7 +70,10 @@ async function invokeHelper(request: Request, signal: AbortSignal): Promise<Repl
 export function installExtension(pi: ExtensionAPI, transport: Transport = invokeHelper): void {
     let activation: Activation | undefined;
     let pending = Promise.resolve();
-    let queued = 0;
+    let queuedLifecycle = 0;
+    let queuedOptional = 0;
+    let sampleRevision = 0;
+    const latestSamples = new Map<string, number>();
     let shuttingDown = false;
     let shutdownDrainExpired = false;
     let running: AbortController | undefined;
@@ -92,20 +95,31 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         sourceIsCurrent: () => boolean = () => true): Promise<boolean> => {
         if (!lifecycle && owner.lost) return Promise.resolve(false);
         const body = facts(owner, extra); // Capture before any asynchronous work.
-        if (queued >= 64 && !lifecycle) return Promise.resolve(false);
-        if (++queued > 64) owner.lost = true;
+        // Replaceable samples have their own bounded budget. Dropping or
+        // coalescing them cannot consume root lifecycle custody or claim loss.
+        // A successful compaction is a distinct event, never coalesced.
+        const sampleKey = !lifecycle && name !== "session_compact" ? `${name}:${extra.agent_id ?? ""}` : "";
+        const revision = ++sampleRevision;
+        if (sampleKey) latestSamples.set(sampleKey, revision);
+        if (!lifecycle && queuedOptional >= 16) return Promise.resolve(false);
+        if (lifecycle) {
+            if (++queuedLifecycle > 64) owner.lost = true;
+        } else ++queuedOptional;
         const work = pending.then(async () => {
-            --queued;
+            if (lifecycle) --queuedLifecycle;
+            else --queuedOptional;
             if (owner !== activation || owner.lossReported || !sourceIsCurrent() ||
+                (sampleKey && latestSamples.get(sampleKey) !== revision) ||
                 (!lifecycle && owner.lost) || (shutdownDrainExpired && name !== "session_shutdown")) return false;
             const controller = new AbortController();
             running = controller;
+            const sentLoss = owner.lost;
             try {
                 const reply = await transport({ operation: "event",
-                    name: owner.lost ? "logonomic_observation_lost" : name, body }, controller.signal);
+                    name: sentLoss ? "logonomic_observation_lost" : name, body }, controller.signal);
                 if (!reply?.committed || !reply.accepted) {
                     if (lifecycle) owner.lost = true;
-                } else if (owner.lost) owner.lossReported = true;
+                } else if (sentLoss) owner.lossReported = true;
                 return reply?.committed === true && reply.accepted === true;
             } catch { if (lifecycle) owner.lost = true; return false; }
             finally { if (running === controller) running = undefined; }
@@ -150,6 +164,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const owner: Activation = { sessionId, nonce: freshId(), turnId: "", sequence: 0,
             lost: false, lossReported: false, pendingContext: "" };
         activation = owner;
+        latestSamples.clear();
         children.clear();
         attention.clear();
         const sessionFile = ctx.sessionManager.getSessionFile();
@@ -350,6 +365,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         } finally { clearTimeout(deadline); }
         if (owner) await send(owner, "session_shutdown");
         activation = undefined;
+        latestSamples.clear();
         children.clear();
         attention.clear();
     });

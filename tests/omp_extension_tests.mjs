@@ -278,6 +278,37 @@ await retryModel.drain();
 assert.equal(retryModel.delivered.filter(request => request.name === "task:subagent:progress").length, 2,
     "a refused optional model delivery remains recoverable at the next native observation");
 
+let releaseOptional;
+const saturated = harness(request => request.name === "message_end" ?
+    new Promise(resolve => { releaseOptional = resolve; }) : { committed: true, accepted: true });
+await saturated.emit("session_start");
+await saturated.emit("agent_start");
+await saturated.emit("message_end", { message: { role: "assistant" } });
+for (let index = 0; index < 80; index++) {
+    saturated.handlers.get("message_end")({ type: "message_end", message: { role: "assistant" } }, saturated.ctx);
+}
+saturated.handlers.get("agent_end")({ type: "agent_end", willContinue: false,
+    messages: [{ role: "assistant", stopReason: "stop" }] }, saturated.ctx);
+releaseOptional({ committed: true, accepted: true });
+await saturated.drain();
+await saturated.emit("session_shutdown");
+assert.deepEqual(saturated.delivered.map(request => request.name),
+    ["session_start", "agent_start", "message_end", "agent_end", "session_shutdown"],
+    "optional sample saturation cannot consume root lifecycle budget or suppress terminal/shutdown facts");
+
+let releaseBeforeLoss;
+const concurrentLoss = harness(request => request.name === "message_end" ?
+    new Promise(resolve => { releaseBeforeLoss = resolve; }) : { committed: true, accepted: true });
+await concurrentLoss.emit("session_start");
+await concurrentLoss.emit("agent_start");
+await concurrentLoss.emit("message_end", { message: { role: "assistant" } });
+concurrentLoss.handlers.get("agent_end")({ type: "agent_end", messages: [] }, concurrentLoss.ctx);
+releaseBeforeLoss({ committed: true, accepted: true });
+await concurrentLoss.drain();
+assert.deepEqual(concurrentLoss.delivered.map(request => request.name),
+    ["session_start", "agent_start", "message_end", "logonomic_observation_lost"],
+    "only an acknowledged dispatched loss notification can close the loss-reporting obligation");
+
 let cancelledStall = false;
 const stalled = harness((request, signal) => request.name === "agent_start" ?
     new Promise(resolve => signal.addEventListener("abort", () => {
