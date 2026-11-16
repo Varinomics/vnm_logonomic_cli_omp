@@ -227,6 +227,56 @@ void native_record_size()
         "Native history must not inherit the capability protocol's small string bound");
 }
 
+void exact_custom_session_file()
+{
+    // SessionManager.open/#setSessionFile accept a custom path and
+    // FileSessionStorage.readText does not select a format by filename suffix.
+    const auto body = std::string(header) + R"({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":"exact custom file"}}
+{"type":"message","id":"old","parentId":"u","message":{"role":"assistant","content":"abandoned branch"}}
+{"type":"message","id":"selected","parentId":"u","message":{"role":"assistant","content":"selected custom branch"}}
+)";
+    for (const std::string_view name : {"work", "conversation.session", "conversation.custom-suffix"}) {
+        Fixture fixture;
+        fixture.source = fixture.directory / ".omp-sessions" / name;
+        std::filesystem::create_directory(fixture.source.parent_path());
+        fixture.write(body);
+        // A conventional-suffix neighbour must never substitute for the exact
+        // captured path, even when the requested source later disappears.
+        std::ofstream(addon::path_from_utf8(addon::path_to_utf8(fixture.source) + ".jsonl")) <<
+            std::string(header) + R"({"type":"message","id":"other","parentId":null,"message":{"role":"user","content":"wrong neighbouring file"}}
+)";
+        auto request = fixture.request();
+        addon::Contract_failure failure;
+        const auto result = omp::export_conversation(request, {}, &failure);
+        require(result && result->message_count == 2, "Exact custom filenames must retain native branch selection");
+        const auto exported = read(fixture.directory / "export" / result->file_name);
+        require(exported.find("exact custom file") < exported.find("selected custom branch") &&
+            exported.find("abandoned branch") == std::string::npos &&
+            exported.find("wrong neighbouring file") == std::string::npos && read(fixture.source) == body,
+            "Custom-path export must read only the captured source without changing it");
+
+        const auto refused = [&](std::string_view bytes, std::string_view output) {
+            fixture.write(bytes);
+            auto rejected = fixture.request(output);
+            require(!omp::export_conversation(rejected, {}, &failure) && !failure.reason_code.empty() &&
+                std::filesystem::is_empty(fixture.directory / output),
+                "Custom filenames do not authorize foreign, unknown, malformed or binary native sources");
+        };
+        refused("{\"type\":\"session\",\"version\":3,\"id\":\"foreign\"}\n", "foreign");
+        refused("{\"type\":\"session\",\"version\":4,\"id\":\"session-exact\"}\n", "future");
+        refused("{\"type\":\"session\",\"version\":3}\n", "missing-id");
+        refused(body + "{broken complete record}\n", "malformed");
+        refused(std::string("\x1f\x8b\x08\0", 4), "gzip");
+        refused(std::string("SQLite format 3\0", 16) + std::string(512, '\0'), "database");
+        std::filesystem::remove(fixture.source);
+        auto missing = fixture.request("missing");
+        require(!omp::export_conversation(missing, {}, &failure) &&
+            failure.reason_code == "conversation_unavailable" &&
+            std::filesystem::is_empty(fixture.directory / "missing"),
+            "A missing exact custom file cannot fall back to a nearby JSONL conversation");
+    }
+}
+
 } // namespace
 
 int main()
@@ -237,6 +287,7 @@ int main()
         rejection_and_cancellation();
         internal_developer_projection();
         native_record_size();
+        exact_custom_session_file();
         return 0;
     }
     catch (const std::exception& error) {

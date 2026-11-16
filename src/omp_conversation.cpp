@@ -244,7 +244,10 @@ std::optional<addon::Conversation_export_result> export_conversation(
         return std::nullopt;
     }
     const auto path = addon::path_from_utf8(*source);
-    if (!path.is_absolute() || path.extension() != ".jsonl") {
+    // Native SessionManager.open retains an exact custom file path without a
+    // suffix requirement. The captured identity and parsed v3 header/graph,
+    // rather than a filename convention, establish the export source.
+    if (!path.is_absolute()) {
         reject(failure, "conversation_format_unavailable", "Export supports absolute native JSONL session files.");
         return std::nullopt;
     }
