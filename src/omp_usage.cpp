@@ -278,7 +278,7 @@ bool overlaps(const fs::path& left, const fs::path& right)
     const auto second = comparable_path(right);
     const auto below = [](const std::string& child, const std::string& parent) {
         return child == parent || (child.starts_with(parent) && child.size() > parent.size() &&
-            (!parent.empty() && (parent.back() == '/' || parent.back() == '\\') ||
+            ((!parent.empty() && (parent.back() == '/' || parent.back() == '\\')) ||
                 child[parent.size()] == '/' || child[parent.size()] == '\\'));
     };
     return below(first, second) || below(second, first);
