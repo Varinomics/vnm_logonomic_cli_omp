@@ -76,6 +76,36 @@ function filePaths(input: Record<string, unknown>, name: string): string[] | und
         ? paths as string[] : undefined;
 }
 
+// Native read can route opaque URIs before trying the filesystem, and its
+// router/fetch code repairs single-slash and path-prefixed URL spellings.
+// Admit filesystem syntax instead of enumerating the currently known schemes.
+// These are the selector tails that native extractUriScheme explicitly excludes
+// from opaque URIs. Other colon-bearing paths must use an unambiguous spelling.
+const SELECTOR = String.raw`(?:raw|conflicts|-?\d+(?:[-+]\d+)?(?:,\d+(?:[-+]\d+)?)*)`;
+const FILE_SELECTOR_PATH = new RegExp(String.raw`^[^:]+(?::${SELECTOR})+$`, "i");
+const WINDOWS_DRIVE = /^(?:@)?(?:\\\\\?\\)?[a-z]:[\\/](?![\\/])/i;
+
+function filesystemSpelling(value: string): boolean {
+    const trimmed = value.trim();
+    const path = trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length > 1
+        ? trimmed.slice(1, -1) : trimmed;
+    if (!path || /^www\./i.test(path)) return false;
+    // Preserve native absolute drive and extended-length paths. Two separators
+    // after a drive are excluded: glob normalizes backslashes to slashes and
+    // native URI extraction then treats C:// as a hierarchical scheme.
+    const withoutDrive = path.replace(WINDOWS_DRIVE, "/");
+    return !withoutDrive.includes(":") || FILE_SELECTOR_PATH.test(withoutDrive);
+}
+
+function filesystemPaths(value: string): boolean {
+    // Check the whole spelling as well as every possible list fragment. For
+    // example, `Makefile:12 other` can be an opaque URI even though its pieces
+    // look local. Native delimiter recovery depends on filesystem existence;
+    // conservatively split quotes/braces too, without probing racy file state.
+    return filesystemSpelling(value) && value.split(/[;,\s"{}]+/u)
+        .filter(part => part.length > 0).every(filesystemSpelling);
+}
+
 export function permitsReviewCall(policy: ReviewPolicy, tools: Tool[], event: ToolCall): boolean {
     if (typeof event.toolName !== "string" || !object(event.input)) return false;
     const tool = exactTool(tools, event.toolName);
@@ -92,7 +122,7 @@ export function permitsReviewCall(policy: ReviewPolicy, tools: Tool[], event: To
                 const target = exactTool(tools, path.slice(5));
                 return target !== undefined && hostTool(target, policy);
             }
-            return !/[a-z][a-z0-9+.-]*:\/\//i.test(path) && !/^www\./i.test(path);
+            return filesystemPaths(path);
         });
     }
     if (event.toolName === "write" && nativeBuiltin(tool, "write") &&

@@ -21,6 +21,45 @@ assert.equal(permits("read", { path: "xd://mcp_host_report_result" }), true);
 assert.equal(permits("write", { path: "xd://mcp_host_report_result", content: "{\"message\":\"review result\"}" }), true);
 assert.equal(permits("mcp_host_report_result", { message: "review result" }), true);
 
+for (const path of [
+    "review.txt", "./www.example/notes.txt", "/tmp/review.txt", "~/repo/review.txt",
+    '"folder with spaces/review.txt"', "src;tests", "src,tests", "{src,tests}/**/*.cpp",
+    "source.cpp:1-90", "Makefile:raw:1-20,30+5", "README:conflicts", "README:-20",
+    String.raw`C:\repo\source.cpp`, "C:/repo/source.cpp", String.raw`C:\Program Files\source.cpp:12`,
+    String.raw`\\?\C:\repo\source.cpp`, String.raw`\\server\share\source.cpp`,
+]) for (const name of ["read", "grep", "glob"]) {
+    assert.equal(permits(name, { path }), true, `${name} keeps filesystem spelling: ${path}`);
+}
+
+// read/grep/glob share normalization and list recovery. In particular, native
+// read tries opaque MCP resource URIs before falling back to a missing file;
+// the enclosing built-in name does not authorize that separate resource call.
+for (const path of [
+    "reviewprobe:mutate", "urn:example:document", "custom:raw:mutate",
+    "http:/host/mutate", "https:/host/mutate", "HTTP:/host/mutate",
+    "local:/notes", String.raw`local:\notes`, "/repo/local://notes", String.raw`C:\repo\local://notes`,
+    "@local://notes", "file:///tmp/review.txt", "source.cpp:conflict://1",
+    "review.txt;reviewprobe:mutate", "reviewprobe:mutate;review.txt", "review.txt,reviewprobe:mutate",
+    "review.txt reviewprobe:mutate", '"reviewprobe:mutate"', 'review.txt;"reviewprobe:mutate"',
+    "{review.txt,reviewprobe:mutate}", "review.txt;https:/host/mutate",
+    "review.txt;www.host/mutate", 'review.txt;"www.host/mutate"',
+    // The *whole* input may be opaque even when all delimiter fragments look
+    // local; do not authorize it by independently accepting `Makefile:12`.
+    "Makefile:12 other", "Makefile:12,other", "Makefile:raw other", "Makefile:12;other",
+    "C://repo/file", String.raw`C:\\repo\file`, String.raw`C:/\repo/file`,
+    "xd:/mcp_host_report_result", "xd://mcp_host_report_result:raw",
+    "xd://mcp_host_report_result?query=1", "xd://mcp_host_report_result;review.txt",
+    "review.txt;xd://mcp_host_report_result", "xd://;review.txt",
+]) for (const name of ["read", "grep", "glob"]) {
+    assert.equal(permits(name, { path }), false, `${name} refuses routed/ambiguous spelling: ${path}`);
+}
+assert.equal(permits("grep", { paths: ["src", "reviewprobe:mutate"] }), false);
+assert.equal(permits("glob", { path: ["src", "local:/notes"] }), false);
+assert.equal(permits("read", { path: "xd://mcp_host_report_result" }, tools), true,
+    "The exact authorized device documentation remains available");
+assert.equal(permits("write", { path: "xd://mcp_host_report_result", content: "{}" }), true,
+    "The exact authorized host action remains available");
+
 for (const [name, input] of [
     ["bash", { command: "touch forbidden" }], ["task", { task: "modify a file" }],
     ["write", { path: "source.cpp", content: "replacement" }],
