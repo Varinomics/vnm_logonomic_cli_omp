@@ -79,7 +79,7 @@ checked through the actual adapter handler.
 | Scenario | Native operation and required evidence |
 |---|---|
 | `structured` | RPC readiness, protocol negotiation, one local model response, correlated prompt completion, settlement, stdin closure and successful process exit. The final SDK answer must equal the emitted assistant text. |
-| `profile` | Only the selected native profile contains the model configuration. `OMP_PROFILE`, its precedence over `PI_PROFILE`, and `PI_CONFIG_DIR` must survive the actual capability environment filter. |
+| `profile` | Only the selected native profile contains the model configuration. Actual account discovery/resolution must select that filesystem source; preparation must acknowledge its exact version-2 account context. `OMP_PROFILE`, its precedence over `PI_PROFILE`, and `PI_CONFIG_DIR` must survive the capability environment filter. |
 | `delegated` | The generated native plugin starts the exact host relay and descriptor/server pair. A real MCP initialization and `tools/list` precede a real `tools/call`. Default native `tools.xdev` remains enabled; the local model discovers and writes the mounted `xd://` route. |
 | `background` | A real asynchronous native Bash job outlives the initial assistant response. The initial prompt is unsettled; the completion wakes another native turn and emits `session_settled`. The final answer differs from the earlier pending-work text. |
 | `persistent` | A real 30-second asynchronous Bash job remains active at the initial prompt result. A deliberately short host deadline cancels the session. Inspection must report `omp_timed_out`, and native disposal must exit successfully. |

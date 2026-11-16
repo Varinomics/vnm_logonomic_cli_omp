@@ -30,7 +30,8 @@ Context and working-directory evidence is specified in
 | Exact-record interactive resume | Unavailable | Native path resume can follow a newer continuation or fork a moved conversation; path alone is not exact native identity. |
 | Conversation export | Implemented | `conversation-export@1` reads the exact captured local version 3 JSONL file and exports its active branch. In-memory, gzip/database, unknown-version, missing-locator and foreign-ID sources fail explicitly. No native resume is needed. |
 | Usage accounting | Not implemented | No `usage-scan` producer maps native persisted usage and source coverage into SDK records. |
-| Managed accounts/authentication | Not implemented | Existing launches preserve the chosen native profile/credentials; no managed account ownership or authentication-operation contract is declared. |
+| Native source-profile accounts | Implemented | `accounts@2` discovers and resolves native filesystem profiles, including explicit external agent directories, and verifies versioned selected-account preparation. This identifies a source profile, not a historical provider principal. |
+| Authentication operations | Not implemented | Native launches retain their own credentials. Native OAuth-provider availability alone does not establish authentication for all configured API-key/custom providers or a managed login operation. |
 | Quota reporting | Not implemented | No native account-scoped quota observation is translated into a host contract. |
 | Cooperative descriptions | Not implemented | Child definition labels are reported; no model-produced description protocol is requested or consumed. |
 | Host-blockable completion | Unavailable | Native `session_stop` is a veto/continuation gate, not a completed turn. This package does not make host policy part of that native gate. |

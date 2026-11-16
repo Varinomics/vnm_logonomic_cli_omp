@@ -27,6 +27,7 @@ remains an allowlist when the package module is added.
 |---|---|
 | Launcher discovery and preparation | Frozen-environment `omp` discovery, literal launcher recognition, preserved native arguments and a custodied extension asset. |
 | Launcher approval controls | Yolofy and Unyolofy edit native tool-approval flags in understood literal launchers while retaining other arguments and saved configuration. |
+| Native source profiles | `accounts@2` discovers and resolves filesystem profiles and checks exact selected-account acknowledgments before preparation. |
 | Root session lifecycle | Native session load, successful switch, clear, branch/tree change and shutdown. Each activation has separate correlation even when `/clear` keeps the native UUID. |
 | Root working and completion | Native agent-loop events and continuation decisions, including the terminal callback before prompt unwinding. Successful, failed and interrupted outcomes remain distinct. |
 | Context and working directory | Native occupancy, installed compaction events and current directory observations, correlated to the active conversation. |
@@ -90,9 +91,9 @@ Noninteractive modes, compound scripts, positional startup prompts, unknown
 extension-owned launch flags, and Windows `.cmd`/`.ps1` wrappers retain their
 ordinary launcher behavior without interactive lifecycle promises. Supported
 Windows preparation uses a native `omp.exe`; POSIX executable/shebang
-launchers are supported. Credentials, native account management, quota,
-and usage accounting remain outside this package's
-declared capabilities.
+launchers are supported. [Native source profiles](docs/native_profiles.md) are
+filesystem identities; authentication operations, provider-principal identity,
+quota and usage accounting remain outside this package's declared capabilities.
 
 A host initial prompt is supported on a fresh launcher without an existing
 prompt, attachment or resume/continue/fork/goal selector. It is passed as one

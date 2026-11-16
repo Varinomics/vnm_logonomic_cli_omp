@@ -28,8 +28,8 @@ struct Native_profile
 };
 
 // Resolves only the native paths justified by this frozen literal invocation.
-// It performs read-only directory checks, never loads credentials or evaluates
-// dotenv/extension code, and never substitutes the adapter's own environment.
+// It performs read-only directory checks, never imports credential values or
+// evaluates dotenv/extension code, and never uses the adapter's own environment.
 std::optional<Native_profile> resolve_native_profile(
     const logonomic::cli_addon::Launcher_request& launcher,
     const logonomic::cli_addon::Launch_environment& environment,
