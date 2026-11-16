@@ -216,8 +216,8 @@ void preparation_contract(const Temporary_directory& directory)
         "Preparation must round-trip the public SDK contract");
 
     request.purpose = addon::Structured_purpose::READ_ONLY_REVIEW;
-    require(!omp::prepare_structured_session(request, &failure) && failure.reason_code == "purpose_unavailable",
-        "Unenforced read-only work must not be advertised");
+    require(!omp::prepare_structured_session(request, &failure) && failure.reason_code == "read_only_unavailable",
+        "A review cannot launch without the host-adopted managed guard");
     request = request_for(directory);
     request.prompt = std::string("bad\xff", 4);
     require(!omp::prepare_structured_session(request, &failure), "A binary task must not corrupt the native JSON protocol");
@@ -226,6 +226,75 @@ void preparation_contract(const Temporary_directory& directory)
         request.context.launcher.script_body += " " + std::string(argument);
         request.context.launcher_argv.push_back(argument);
         require(!omp::prepare_structured_session(request, &failure), "Ambiguous or task-bearing launchers must be refused");
+    }
+}
+
+void review_contract(const Temporary_directory& directory)
+{
+    auto request = request_for(directory);
+    request.purpose = addon::Structured_purpose::READ_ONLY_REVIEW;
+    request.context.declared_assets = {"assets/native_review.ts"};
+    addon::Contract_failure failure;
+    const auto prepared = omp::prepare_structured_session(request, &failure);
+    if (!prepared) {
+        throw std::runtime_error("A native read-only review must prepare: " + failure.reason_code + " " + failure.detail);
+    }
+    require(prepared->process.executable.path.find("helpers/omp_review_bridge") == 0 &&
+        prepared->process.assets == request.context.declared_assets,
+        "Only the review bridge may translate the materialized guard into native argv");
+    const auto& environment = prepared->process.environment;
+    const auto asset = std::find_if(environment.begin(), environment.end(), [](const auto& pair) {
+        return pair.first == "OMP_LOGONOMIC_REVIEW_ASSET";
+    });
+    const auto policy = std::find_if(environment.begin(), environment.end(), [](const auto& pair) {
+        return pair.first == "OMP_LOGONOMIC_REVIEW_POLICY";
+    });
+    require(asset != environment.end() && asset->second == "{{asset:assets/native_review.ts}}" &&
+        policy != environment.end(), "Managed asset substitution belongs in the native bridge environment");
+    const auto state = parse(prepared->inspection.protocol_state);
+    require(json::text(parse(policy->second), "scope") == json::text(state, "review_scope") &&
+        json::member(parse(policy->second), "tools") == Json::array(),
+        "A nondelegated review receives no task-control execution authority");
+    auto idle = k_idle;
+    idle.set("sessionId", Json("review-native-session"));
+    const auto marker = json::object({{"type", Json("custom")}, {"customType", Json("logonomic-read-only")},
+        {"data", json::object({{"version", Json(1)}, {"scope", json::member(state, "review_scope")},
+            {"session_id", Json("review-native-session")}})}});
+    for (const auto& entries : {
+        Json::array(),
+        Json(Json::Array{marker, marker}),
+        Json(Json::Array{json::object({{"type", Json("custom")}, {"customType", Json("logonomic-read-only")},
+            {"data", json::object({{"version", Json(1)}, {"scope", json::member(state, "review_scope")},
+                {"session_id", Json("other-session")}})}})}),
+        Json(Json::Array{json::object({{"type", Json("custom")}, {"customType", Json("logonomic-read-only")},
+            {"data", json::object({{"version", Json(1)}, {"scope", Json(std::string(32, 'b'))},
+                {"session_id", Json("review-native-session")}})}})}),
+    }) {
+        Conversation refused(prepared->inspection.protocol_state);
+        const auto readiness = refused.start(idle);
+        require(readiness.stdin_bytes && json::text(parse(*readiness.stdin_bytes), "type") == "get_entries",
+            "Native idle state alone cannot release a review prompt");
+        const auto result = refused.send(response("lg-tools", "get_entries", json::object({{"entries", entries}})));
+        require(result.failure_reason == "read_only_unavailable" && !result.stdin_bytes,
+            "Only one exact active guard acknowledgment may release a review task");
+    }
+    Conversation admitted(prepared->inspection.protocol_state);
+    admitted.start(idle);
+    const auto ready = admitted.send(response("lg-tools", "get_entries",
+        json::object({{"entries", Json(Json::Array{marker})}})));
+    require(ready.stdin_bytes && json::text(parse(*ready.stdin_bytes), "type") == "prompt",
+        "An exact active native read boundary must release the unchanged review prompt");
+
+    request.prompt = " \n/config change";
+    require(!omp::prepare_structured_session(request, &failure) && failure.reason_code == "purpose_unavailable",
+        "Native slash-command dispatch is not a read-only model task");
+    request.prompt = "Review the files.";
+    for (const auto* argument : {"--extension=unsafe.ts", "--trusted-extension=unsafe.ts", "--tools=bash", "--plan-yolo", "--advisor"}) {
+        auto conflicting = request;
+        conflicting.context.launcher.script_body += " " + std::string(argument);
+        conflicting.context.launcher_argv.push_back(argument);
+        require(!omp::prepare_structured_session(conflicting, &failure),
+            "The review policy must refuse a conflicting explicit launcher option");
     }
 }
 
@@ -584,6 +653,7 @@ int main(int argc, char** argv)
         }
         Temporary_directory directory(argv[0]);
         preparation_contract(directory);
+        review_contract(directory);
         ambient_profile_contract(directory);
         const auto request = request_for(directory);
         completion_contract(request);

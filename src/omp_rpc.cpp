@@ -48,6 +48,8 @@ struct Rpc_state
     std::string              prompt;
     Json                     expected_tools = Json::array();
     std::string              tool_scope;
+    std::string              review_scope;
+    std::string              native_session;
     std::string              selected_model;
     std::string              selected_effort;
     std::string              pending;
@@ -112,8 +114,9 @@ Json strings(const std::vector<std::string>& values)
 std::string save_state(const Rpc_state& state)
 {
     return addon::serialize_json(json::object({
-        {"version", Json(2)}, {"phase", Json(static_cast<int>(state.phase))},
+        {"version", Json(3)}, {"phase", Json(static_cast<int>(state.phase))},
         {"prompt", Json(state.prompt)}, {"expected_tools", state.expected_tools}, {"tool_scope", Json(state.tool_scope)},
+        {"review_scope", Json(state.review_scope)}, {"native_session", Json(state.native_session)},
         {"selected_model", Json(state.selected_model)}, {"selected_effort", Json(state.selected_effort)},
         {"pending", Json(addon::encode_base64(state.pending))}, {"output", Json(state.output)},
         {"stderr", Json(addon::encode_base64(state.stderr_tail))},
@@ -135,15 +138,15 @@ bool integer_in(const Json& value, std::int64_t minimum, std::int64_t maximum)
 std::optional<Rpc_state> load_state(std::string_view bytes)
 {
     const auto value = addon::parse_exchange_protocol_state(bytes);
-    if (!value || !json::exact_keys(*value, {"version", "phase", "prompt", "expected_tools", "tool_scope",
+    if (!value || !json::exact_keys(*value, {"version", "phase", "prompt", "expected_tools", "tool_scope", "review_scope", "native_session",
             "selected_model", "selected_effort", "pending", "output", "stderr", "chunk_id", "chunk",
             "chunk_count", "chunk_next", "chunk_length", "frame_limit", "acknowledged", "completed", "settled"}) ||
-        json::member(*value, "version") != Json(2) ||
+        json::member(*value, "version") != Json(3) ||
         !integer_in(json::member(*value, "phase"), 0, static_cast<int>(Phase::DRAINING)))
     {
         return std::nullopt;
     }
-    for (const auto key : {"prompt", "tool_scope", "selected_model", "selected_effort", "pending", "output", "stderr", "chunk_id", "chunk"}) {
+    for (const auto key : {"prompt", "tool_scope", "review_scope", "native_session", "selected_model", "selected_effort", "pending", "output", "stderr", "chunk_id", "chunk"}) {
         if (!json::member(*value, key).is_string()) {
             return std::nullopt;
         }
@@ -178,6 +181,8 @@ std::optional<Rpc_state> load_state(std::string_view bytes)
     }
     state.expected_tools = tools;
     state.tool_scope = json::text(*value, "tool_scope");
+    state.review_scope = json::text(*value, "review_scope");
+    state.native_session = json::text(*value, "native_session");
     auto pending = addon::decode_base64(json::text(*value, "pending"));
     auto chunk = addon::decode_base64(json::text(*value, "chunk"));
     auto errors = addon::decode_base64(json::text(*value, "stderr"));
@@ -206,6 +211,8 @@ std::optional<Rpc_state> load_state(std::string_view bytes)
         state.selected_model.size() > addon::limits::k_max_delegated_model_bytes ||
         state.selected_effort.size() > addon::limits::k_max_delegated_reasoning_effort_bytes ||
         state.chunk_id.size() > 128 || state.tool_scope.size() > 64 || state.pending.size() >= state.frame_limit ||
+        (!state.review_scope.empty() && !addon::is_valid_generation_nonce_hex(state.review_scope)) ||
+        state.native_session.size() > 256 || (state.review_scope.empty() && !state.native_session.empty()) ||
         (state.expected_tools.as_array().empty() != state.tool_scope.empty()) ||
         (state.chunk_id.empty() && (state.chunk_count || state.chunk_next || state.chunk_length || !state.chunk.empty())) ||
         (!state.chunk_id.empty() && (state.chunk_count < 2 || state.chunk_next == 0 ||
@@ -253,6 +260,9 @@ bool exact_selection(const Rpc_state& state, const Json& native)
 
 bool tools_available(const Rpc_state& state, const Json& native)
 {
+    if (state.expected_tools.as_array().empty()) {
+        return true;
+    }
     const auto& entries = json::member(native, "entries");
     if (!entries.is_array()) {
         return false;
@@ -297,6 +307,34 @@ bool tools_available(const Rpc_state& state, const Json& native)
         names.push_back(name);
     }
     return true;
+}
+
+bool review_guard_available(const Rpc_state& state, const Json& data)
+{
+    if (state.review_scope.empty()) {
+        return true;
+    }
+    const auto& entries = json::member(data, "entries");
+    if (!entries.is_array()) {
+        return false;
+    }
+    const Json* acknowledgment = nullptr;
+    for (const auto& entry : entries.as_array()) {
+        if (json::text(entry, "type") != "custom" || json::text(entry, "customType") != "logonomic-read-only") {
+            continue;
+        }
+        const auto& value = json::member(entry, "data");
+        if (json::text(value, "scope") != state.review_scope) {
+            continue;
+        }
+        if (acknowledgment) {
+            return false;
+        }
+        acknowledgment = &value;
+    }
+    return acknowledgment && json::exact_keys(*acknowledgment, {"version", "scope", "session_id"}) &&
+        json::member(*acknowledgment, "version") == Json(1) &&
+        json::text(*acknowledgment, "session_id") == state.native_session;
 }
 
 void submit_prompt(Rpc_state& state, std::string& input, addon::Structured_inspect_result& result)
@@ -397,7 +435,13 @@ std::optional<addon::Structured_inspect_result> consume_frame(
                 const auto& model = json::member(data, "model");
                 state.selected_model = json::text(model, "provider") + "/" + json::text(model, "id");
             }
-            if (state.expected_tools.as_array().empty()) {
+            if (!state.review_scope.empty()) {
+                if (!json::bounded_string(json::member(data, "sessionId"), 256)) {
+                    return failed("read_only_unavailable", "OMP did not identify the guarded native review session.", "native_error");
+                }
+                state.native_session = json::text(data, "sessionId");
+            }
+            if (state.expected_tools.as_array().empty() && state.review_scope.empty()) {
                 submit_prompt(state, input, result);
             }
             else {
@@ -407,6 +451,9 @@ std::optional<addon::Structured_inspect_result> consume_frame(
         }
         else
         if (state.phase == Phase::CATALOG) {
+            if (!review_guard_available(state, data)) {
+                return failed("read_only_unavailable", "OMP did not acknowledge this task's active native read-only guard.", "native_error");
+            }
             if (!tools_available(state, data)) {
                 return failed("task_control_unavailable", "OMP did not confirm every requested task-server action in this task's enabled tool inventory.", "native_error");
             }
@@ -531,7 +578,7 @@ std::optional<addon::Structured_inspect_result> consume_frame(
 
 // Only the native options whose token arity is known can be preserved without
 // accidentally turning a launcher message or command into an extra task.
-bool session_arguments(const std::vector<std::string>& arguments, bool* trusted_extensions = nullptr)
+bool session_arguments(const std::vector<std::string>& arguments, bool* trusted_extensions = nullptr, bool read_only = false)
 {
     constexpr std::string_view valued[] = {
         "--profile", "--provider", "--model", "--config", "--add-dir", "--smol", "--slow", "--plan",
@@ -550,6 +597,15 @@ bool session_arguments(const std::vector<std::string>& arguments, bool* trusted_
         const auto& argument = arguments[index];
         const auto equals = argument.starts_with("--") ? argument.find('=') : std::string::npos;
         const std::string_view name(argument.data(), equals == std::string::npos ? argument.size() : equals);
+        if (read_only) {
+            constexpr std::string_view conflicting[] = {
+                "--hook", "--extension", "-e", "--trusted-extension", "--tools", "--no-tools", "--session-dir",
+                "--plan", "--plan-yolo", "--plan-yolo-into", "--prewalk", "--prewalk-into", "--advisor",
+            };
+            if (std::find(std::begin(conflicting), std::end(conflicting), name) != std::end(conflicting)) {
+                return false;
+            }
+        }
         if (std::find(std::begin(valued), std::end(valued), name) != std::end(valued)) {
             if (trusted_extensions && name == "--trusted-extension") {
                 *trusted_extensions = true;
@@ -570,10 +626,6 @@ std::optional<addon::Process_proposal> prepare_process(
     addon::Structured_purpose purpose, const addon::Session_launch_context& context,
     std::string_view prompt, addon::Contract_failure* failure)
 {
-    if (purpose != addon::Structured_purpose::IMPLEMENTATION) {
-        reject(failure, "purpose_unavailable", "OMP does not provide a verified read-only CLI sandbox.");
-        return std::nullopt;
-    }
     if (prompt.empty() || !addon::is_valid_utf8(prompt) || prompt.find('\0') != std::string_view::npos ||
         prompt.size() > addon::limits::k_max_structured_prompt_bytes || !context.launch_environment)
     {
@@ -581,11 +633,17 @@ std::optional<addon::Process_proposal> prepare_process(
         return std::nullopt;
     }
     const auto& environment = *context.launch_environment;
+    const bool read_only = purpose == addon::Structured_purpose::READ_ONLY_REVIEW;
+    const auto first = prompt.find_first_not_of(" \t\r\n");
+    if (read_only && first != std::string_view::npos && prompt[first] == '/') {
+        reject(failure, "purpose_unavailable", "A read-only task must be model input, not a native slash command.");
+        return std::nullopt;
+    }
     if (!validate_native_account(context, {}, failure)) {
         return std::nullopt;
     }
     const auto launcher = recognize_launcher(context.launcher, environment.platform_id, context.launcher_argv);
-    if (!launcher || !session_arguments(launcher->arguments)) {
+    if (!launcher || !session_arguments(launcher->arguments, nullptr, read_only)) {
         reject(failure, "launcher_unavailable", "The saved launcher must be a literal OMP invocation with supported options and no startup task, resume, alias, mode or directory override.");
         return std::nullopt;
     }
@@ -615,6 +673,35 @@ std::optional<addon::Process_proposal> prepare_process(
         return std::nullopt;
     }
     return process;
+}
+
+bool configure_review(
+    const addon::Session_launch_context& context, addon::Process_proposal& process,
+    Rpc_state& state, addon::Contract_failure* failure)
+{
+    constexpr const char* asset = "assets/native_review.ts";
+    if (std::find(context.declared_assets.begin(), context.declared_assets.end(), asset) == context.declared_assets.end()) {
+        reject(failure, "read_only_unavailable", "The host did not adopt the managed native review guard.");
+        return false;
+    }
+    state.review_scope = addon::random_nonce_hex();
+    const auto policy = addon::serialize_json(json::object({
+        {"version", Json(1)}, {"scope", Json(state.review_scope)}, {"tools", state.expected_tools},
+    }));
+    if (policy.size() > addon::limits::k_max_environment_value_bytes) {
+        reject(failure, "payload_too_large", "The exact review task-control policy exceeds the native launch bound.");
+        return false;
+    }
+    process.executable = context.launch_environment->platform_id.starts_with("windows-")
+        ? "helpers/omp_review_bridge.exe" : "helpers/omp_review_bridge";
+    std::erase_if(process.environment_names, [](const auto& name) {
+        const auto lowered = addon::ascii_lowercase(name);
+        return lowered == "omp_logonomic_review_asset" || lowered == "omp_logonomic_review_policy";
+    });
+    process.environment.emplace_back("OMP_LOGONOMIC_REVIEW_ASSET", "{{asset:assets/native_review.ts}}");
+    process.environment.emplace_back("OMP_LOGONOMIC_REVIEW_POLICY", policy);
+    process.assets.push_back(asset);
+    return addon::validate_structured_process_proposal(process, failure);
 }
 
 std::string inventory_extension(const Rpc_state& state)
@@ -647,6 +734,11 @@ std::optional<addon::Structured_prepare_result> prepare_structured_session(
     }
     Rpc_state state;
     state.prompt = request.prompt;
+    if (request.purpose == addon::Structured_purpose::READ_ONLY_REVIEW &&
+        !configure_review(request.context, *process, state, failure))
+    {
+        return std::nullopt;
+    }
     addon::Structured_prepare_result result;
     result.process         = std::move(*process);
     result.inspection      = {true, save_state(state), true};
@@ -721,7 +813,8 @@ std::optional<addon::Delegated_prepare_result> prepare_delegated_session(
         request.context.launcher_argv);
     bool trusted_extensions = false;
     session_arguments(launcher->arguments, &trusted_extensions);
-    process->argv.insert(process->argv.end(), {trusted_extensions ? "--trusted-extension" : "--extension",
+    process->argv.insert(process->argv.end(), {trusted_extensions || request.purpose == addon::Structured_purpose::READ_ONLY_REVIEW
+        ? "--trusted-extension" : "--extension",
         addon::path_to_utf8(root / "task-control.ts")});
     if (request.model_selection) {
         result.private_artifacts.push_back({"selection.yml", addon::serialize_json(json::object({
@@ -729,6 +822,11 @@ std::optional<addon::Delegated_prepare_result> prepare_delegated_session(
             {"contextPromotion", json::object({{"enabled", Json(false)}})},
         }))});
         process->argv.insert(process->argv.end(), {"--config", addon::path_to_utf8(root / "selection.yml")});
+    }
+    if (request.purpose == addon::Structured_purpose::READ_ONLY_REVIEW &&
+        !configure_review(request.context, *process, state, failure))
+    {
+        return std::nullopt;
     }
     if (!addon::validate_structured_process_proposal(*process, failure)) {
         return std::nullopt;
@@ -889,10 +987,6 @@ void handle_structured_session(addon::Invocation_context& context)
         const auto request = addon::decode_structured_inspect_request(context.request().payload, &failure);
         if (!request) {
             context.fail(addon::Result_status::FAILED, failure.reason_code, failure.detail);
-            return;
-        }
-        if (request->purpose != addon::Structured_purpose::IMPLEMENTATION) {
-            context.fail(addon::Result_status::UNAVAILABLE, "purpose_unavailable");
             return;
         }
         context.succeed(addon::encode_structured_inspect_result(inspect_rpc(request->inspection), request->report_failure_diagnostics));

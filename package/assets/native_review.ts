@@ -146,5 +146,5 @@ export function installReviewGuard(pi: NativeApi, policy: ReviewPolicy): void {
 }
 
 export default function reviewExtension(pi: NativeApi): void {
-    installReviewGuard(pi, parseReviewPolicy(process.env.LOGONOMIC_OMP_REVIEW_POLICY ?? ""));
+    installReviewGuard(pi, parseReviewPolicy(process.env.OMP_LOGONOMIC_REVIEW_POLICY ?? ""));
 }

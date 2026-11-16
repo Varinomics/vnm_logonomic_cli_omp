@@ -2,7 +2,7 @@
   "capability_id": "delegated-session",
   "version": 3,
   "payload": {
-    "purposes": ["implementation"],
+    "purposes": ["read_only_review", "implementation"],
     "environment_names": [
       "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR",
       "XDG_STATE_HOME", "XDG_CACHE_HOME", "PI_CODING_AGENT_SESSION_DIR",
