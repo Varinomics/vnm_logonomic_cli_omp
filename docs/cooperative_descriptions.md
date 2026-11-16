@@ -86,8 +86,16 @@ The host return path uses `cooperative-description@1` and delegates to the
 existing title/summary methods in
 `src/logonomic_session_service_sessions_remote_control.cpp`. Codec, classifier,
 native tool and host activation-guard fixtures verify their respective
-boundaries. Actual native model-tool acceptance is tracked separately from
-fixture coverage.
+boundaries.
+
+`tests/native_description_acceptance.py` separately exercises the official OMP
+runtime with the assembled package, a local model and a fixture host receiver.
+The verified OMP 18.20.2 run used native `write` approval policy, executed one
+description tool call, and returned its accepted typed receipt in the second
+real model request. Captured native events also produced one exact typed
+submission through the packaged classifier, followed by native completion and
+clean shutdown. The test records the native executable, package and harness
+hashes alongside its request/receipt evidence.
 
 The focused host gate compiles the production owner-admission kernel. It does
 not build the complete Session-service application; the consumer translation
