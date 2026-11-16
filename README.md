@@ -40,6 +40,7 @@ remains an allowlist when the package module is added.
 | Host-authored initial prompt | One exact first user message for a fresh supported interactive invocation, acknowledged through `interactive-initial-prompt@1`. |
 | Mailbox wake | A private binding targets the exact live interactive activation; native aside delivery can start an idle turn without editor input. |
 | Structured work | Native RPC v2 readiness/negotiation, bounded incremental inspection, exact prompt delivery and verified terminal evidence. |
+| Read-only structured and delegated reviews | Trusted native tool-call guard, exact startup acknowledgment, native file reads and only host-authorized task-control actions. See [read-only reviews](docs/read_only_reviews.md). |
 | Delegated work and model selection | Exact requested model and supported reasoning-level selection, with native state and response validation through the same RPC path. |
 | Conversation export | Exact captured JSONL session, selected native branch, full or compact text, Markdown, and highlighted conversation formats. |
 
@@ -73,7 +74,7 @@ surface and are not covered. The package never uses the native `session_stop`
 veto gate as a completed-turn signal.
 
 Native resume/continue/fork flags are preserved. The SDK's exact-record
-interactive-resume capability is intentionally absent: native path-based
+interactive-resume capability remains undeclared: native path-based
 resume can follow a newer continuation or fork a moved session, so an absolute
 path alone cannot guarantee the requested native identity. The extension
 reports whichever native identity actually loaded. See
