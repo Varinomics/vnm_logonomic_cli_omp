@@ -1,4 +1,5 @@
 #include "omp_provider.h"
+#include "omp_wake.h"
 
 #include <logonomic_cli_addon/launch_preparation.h>
 #include <logonomic_cli_addon/launcher_utilities.h>
@@ -222,6 +223,7 @@ void handle_launch_preparation(addon::Invocation_context& context)
         unchanged();
         return;
     }
+    prepare_wake(*request, patch);
     context.succeed(addon::encode_launch_patch(patch));
 }
 

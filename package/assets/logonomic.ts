@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { nestedTaskSnapshots } from "./native_children.ts";
+import { nativeWakeState, startWakeBridge } from "./native_wake.ts";
+import type { WakeBridge } from "./native_wake.ts";
 
 type Fact = string | boolean | number | Fact[] | { [key: string]: Fact };
 type Facts = Record<string, Fact>;
@@ -22,6 +24,7 @@ type Activation = {
     childState: boolean;
     childLoss?: string;
     childLossReported: boolean;
+    interrupted: boolean;
 };
 type Child = { owner: Activation; sessionFile: unknown; parentToolCallId: unknown; active: boolean;
     modelSnapshot?: string; pendingModel?: string };
@@ -89,6 +92,9 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     let runningLifecycle = false;
     let contextRequest: AbortController | undefined;
     let stopModelObserver: (() => void) | undefined;
+    let wakeBridge: WakeBridge | undefined;
+    let wakeOwner: Activation | undefined;
+    let wakeContext: ExtensionContext | undefined;
     const children = new Map<string, Child>();
     const nestedChildren = new Map<string, NestedChild>();
     const attention = new Map<string, Activation>();
@@ -278,8 +284,11 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         stopModelObserver?.();
         stopModelObserver = undefined;
         const owner: Activation = { sessionId, nonce: freshId(), turnId: "", sequence: 0,
-            lost: false, lossReported: false, pendingContext: "", childState: false, childLossReported: false };
+            lost: false, lossReported: false, pendingContext: "", childState: false, childLossReported: false,
+            interrupted: false };
         activation = owner;
+        wakeOwner = undefined;
+        wakeContext = undefined;
         latestSamples.clear();
         children.clear();
         nestedChildren.clear();
@@ -287,7 +296,17 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const sessionFile = ctx.sessionManager.getSessionFile();
         await send(owner, name, { ...snapshot(ctx), source, ...(previous ? { previous_nonce: previous } : {}),
             ...(identity(sessionFile, 8192) && isAbsolute(sessionFile) ? { session_file: sessionFile } : {}) });
-        if (owner === activation && !owner.lost && !shuttingDown) observeIdleModel(owner, ctx);
+        if (owner === activation && !owner.lost && !shuttingDown) {
+            observeIdleModel(owner, ctx);
+            wakeOwner = owner;
+            wakeContext = ctx;
+            if (!wakeBridge) wakeBridge = await startWakeBridge(pi, () => {
+                if (shuttingDown || !wakeOwner || wakeOwner !== activation || !wakeContext) return undefined;
+                return nativeWakeState(wakeContext, { ...wakeOwner,
+                    attention: [...attention.values()].some(item => item === wakeOwner) });
+            });
+            if (shuttingDown) { wakeBridge?.close(); wakeBridge = undefined; }
+        }
     };
 
     pi.on("session_start", (_event, ctx) => activate("session_start", "load", ctx));
@@ -324,6 +343,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const owner = current(ctx);
         if (!owner) return;
         owner.pendingContext = "";
+        owner.interrupted = false;
         // Automatic continuations remain one busy root turn.
         if (!owner.turnId) owner.turnId = freshId();
         // Capture and queue observations synchronously. Holding the native
@@ -349,6 +369,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // session_stop is a veto gate and is deliberately never observed here.
         const last = [...event.messages].reverse().find(message => message.role === "assistant");
         const reason = last && "stopReason" in last && typeof last.stopReason === "string" ? last.stopReason : "";
+        owner.interrupted = reason === "aborted";
         void send(owner, "agent_end", { ...snapshot(ctx), terminal: true, stop_reason: reason });
         owner.turnId = "";
     });
@@ -480,6 +501,10 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         if (!isRoot(ctx)) return;
         const owner = current(ctx);
         shuttingDown = true;
+        wakeOwner = undefined;
+        wakeContext = undefined;
+        wakeBridge?.close();
+        wakeBridge = undefined;
         stopModelObserver?.();
         stopModelObserver = undefined;
         unsubscribeLifecycle();

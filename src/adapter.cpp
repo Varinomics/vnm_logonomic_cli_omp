@@ -3,8 +3,10 @@
 #include "omp_launcher_approval.h"
 #include "omp_lifecycle.h"
 #include "omp_rpc.h"
+#include "omp_wake.h"
 
 #include <logonomic_cli_addon/adapter_runtime.h>
+#include <logonomic_cli_addon/profile_storage.h>
 
 #include <exception>
 #include <utility>
@@ -26,6 +28,14 @@ void invoke(addon::Invocation_context& context)
         else
         if (capability == "launch-preparation") {
             omp::handle_launch_preparation(context);
+        }
+        else
+        if (capability == "session-wake") {
+            omp::handle_session_wake(context);
+        }
+        else
+        if (capability == "profile-storage") {
+            addon::acknowledge_profile_storage(context);
         }
         else
         if (capability == "launcher-approval") {
@@ -71,6 +81,7 @@ int main()
         {"model-context-delivery", 2}, {"coordination-delivery", 1},
         {"context-state", 2}, {"execution-context", 1}, {"model-state", 1}, {"child-state", 1},
         {"conversation-export", 1},
+        {"profile-storage", 1}, {"session-wake", 1},
         {"interactive-initial-prompt", 1},
     };
     addon::Adapter_runtime runtime(std::move(options));

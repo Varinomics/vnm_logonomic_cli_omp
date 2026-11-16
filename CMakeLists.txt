@@ -50,9 +50,12 @@ function(omp_target target)
     endif()
 endfunction()
 
-add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp src/omp_lifecycle.cpp src/omp_telemetry.cpp src/omp_launcher_approval.cpp src/omp_conversation.cpp)
+add_library(omp_provider STATIC src/omp_provider.cpp src/omp_rpc.cpp src/omp_lifecycle.cpp src/omp_telemetry.cpp src/omp_launcher_approval.cpp src/omp_conversation.cpp src/omp_wake.cpp)
 target_include_directories(omp_provider PUBLIC src)
 target_link_libraries(omp_provider PUBLIC logonomic_cli_addon_sdk::sdk)
+if(WIN32)
+    target_link_libraries(omp_provider PRIVATE ws2_32)
+endif()
 omp_target(omp_provider)
 
 add_executable(omp_adapter src/adapter.cpp)
@@ -91,6 +94,9 @@ add_executable(omp_lifecycle_tests tests/omp_lifecycle_tests.cpp)
 target_link_libraries(omp_lifecycle_tests PRIVATE omp_provider)
 omp_target(omp_lifecycle_tests)
 add_test(NAME omp_lifecycle_tests COMMAND omp_lifecycle_tests)
+add_executable(omp_wake_test_driver tests/omp_wake_test_driver.cpp)
+target_link_libraries(omp_wake_test_driver PRIVATE omp_provider)
+omp_target(omp_wake_test_driver)
 find_program(OMP_NODE_EXECUTABLE node)
 if(OMP_NODE_EXECUTABLE)
     execute_process(COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types --version
@@ -99,6 +105,9 @@ if(OMP_NODE_EXECUTABLE)
         add_test(NAME omp_extension_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/omp_extension_tests.mjs")
         set_tests_properties(omp_extension_tests PROPERTIES TIMEOUT 30 LABELS "cli-addon;native-contract")
+        add_test(NAME omp_wake_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/omp_wake_tests.mjs" "$<TARGET_FILE:omp_wake_test_driver>")
+        set_tests_properties(omp_wake_tests PROPERTIES TIMEOUT 30 LABELS "cli-addon;native-contract")
     endif()
 endif()
 add_test(NAME omp_package_validation COMMAND logonomic_cli_addon_validate
