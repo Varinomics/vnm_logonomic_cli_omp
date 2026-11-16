@@ -1,5 +1,7 @@
 #include <logonomic_cli_addon/helper_client.h>
 #include <logonomic_cli_addon/json_utilities.h>
+#include <logonomic_cli_addon/cooperative_description.h>
+#include <logonomic_cli_addon/sha256.h>
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -122,10 +124,27 @@ int run()
             {"accepted", addon::Json_value(outcome.completed && outcome.accepted)},
             {"instruction", addon::Json_value(outcome.completed && outcome.accepted ? outcome.instruction : "")}})) ? 0 : 1;
     }
-    if (json::text(*request, "operation") != "event") {
+    const bool description = json::text(*request, "operation") == "description";
+    if (json::text(*request, "operation") != "event" && !description) {
         return 1;
     }
-    const auto key = addon::random_nonce_hex();
+    std::string key;
+    if (description) {
+        if (name != "model_description" ||
+            !json::exact_keys(body, {"session_id", "activation_nonce", "request_id", "description"})) return 1;
+        auto submission = json::member(body, "description");
+        if (!submission.is_object() || !json::only_keys(submission, {"kind", "title", "summary"})) return 1;
+        submission.set("provider_session_id", addon::Json_value(session_id));
+        submission.set("transition_nonce", addon::Json_value(nonce));
+        submission.set("request_id", json::member(body, "request_id"));
+        if (!addon::decode_description_submission(submission)) return 1;
+        const auto identity = json::object({{"session_id", addon::Json_value(session_id)},
+            {"activation_nonce", addon::Json_value(nonce)}, {"request_id", json::member(body, "request_id")}});
+        key = "description-" + addon::to_hex(addon::Sha256::digest(addon::serialize_json_canonical(identity)));
+    }
+    else {
+        key = addon::random_nonce_hex();
+    }
     auto outcome = client.deliver_provider_event(name, body, key, nonce);
     if (!outcome.committed && !input.cancelled() &&
         (outcome.exit_code == addon::k_helper_exit_transport_failure || outcome.exit_code == addon::k_helper_exit_pending)) {
@@ -135,11 +154,21 @@ int run()
     auto result = json::object({
         {"committed", addon::Json_value(outcome.committed)},
         {"accepted", addon::Json_value(outcome.committed && outcome.accepted)}});
+    if (outcome.committed && !outcome.accepted && addon::is_valid_reason_code(outcome.reason)) {
+        result.set("reason", addon::Json_value(outcome.reason));
+    }
     if (outcome.committed && outcome.accepted && outcome.helper_response) {
-        for (const auto* name : {"child_state_version", "model_catalog_version"}) {
+        for (const auto* name : {"child_state_version", "model_catalog_version", "cooperative_description_version"}) {
             const auto& version = json::member(*outcome.helper_response, name);
             if (version.is_integer() && version.as_integer() == 1) {
                 result.set(name, addon::Json_value(1));
+            }
+        }
+        if (description) {
+            const auto receipt = addon::decode_description_receipt(
+                json::member(*outcome.helper_response, "cooperative_description"));
+            if (receipt && receipt->request_id == json::text(body, "request_id")) {
+                result.set("description", addon::encode_description_receipt(*receipt));
             }
         }
     }

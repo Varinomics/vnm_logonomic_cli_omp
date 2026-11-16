@@ -36,6 +36,7 @@ remains an allowlist when the package module is added.
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
 | Task/eval children | Native child identities and start/stop events, plus optional descriptions, progress, outcomes and bounded nested Task snapshots through `child-state@1`. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |
+| Cooperative session descriptions | A public native tool returns requested model-authored titles and working summaries through the host's existing policies and exact activation-bound `cooperative-description@1` receipts. |
 | Host-authored initial prompt | One exact first user message for a fresh supported interactive invocation, acknowledged through `interactive-initial-prompt@1`. |
 | Mailbox wake | A private binding targets the exact live interactive activation; native aside delivery can start an idle turn without editor input. |
 | Structured work | Native RPC v2 readiness/negotiation, bounded incremental inspection, exact prompt delivery and verified terminal evidence. |

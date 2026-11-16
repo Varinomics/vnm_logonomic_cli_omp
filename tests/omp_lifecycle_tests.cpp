@@ -402,6 +402,46 @@ void child_details_and_nested()
         "Only an accepted native activation returns negotiated child-state observation authority to the extension");
 }
 
+void cooperative_descriptions()
+{
+    auto request = event("model_description");
+    request.cooperative_description_version = 1;
+    request.event.body = json::object({
+        {"session_id", addon::Json_value("session-A")}, {"activation_nonce", addon::Json_value(nonce_a)},
+        {"request_id", addon::Json_value("native-tool-call")},
+        {"description", json::object({{"kind", addon::Json_value("summary")},
+            {"summary", addon::Json_value("## Work\n- Ready for review.")}})}});
+    const auto result = checked(request).base;
+    require(result.classification == addon::Classification::IGNORED && result.observations.empty() &&
+        result.description_submission && result.description_submission->request_id == "native-tool-call" &&
+        !result.helper_response,
+        "A model description retains native invocation identity without inventing lifecycle or host-policy acceptance");
+    auto legacy = request;
+    legacy.cooperative_description_version = 0;
+    require(!checked(legacy).base.description_submission, "An older host receives no optional description envelope");
+    auto foreign = request;
+    foreign.event.body.set("activation_nonce", addon::Json_value(nonce_b));
+    require(!checked(foreign).base.description_submission, "A retired same-ID activation cannot submit a title or summary");
+    foreign = request;
+    foreign.transition_nonce = nonce_b;
+    require(!checked(foreign).base.description_submission, "The authenticated carrier nonce must match the native capture");
+    foreign = request;
+    foreign.event.body.set("agent_id", addon::Json_value("child"));
+    require(!checked(foreign).base.description_submission, "A root-only description action cannot acquire child authority");
+    request.event.body.set("description", json::object({{"kind", addon::Json_value("title")},
+        {"title", addon::Json_value("invalid\nline")}}));
+    require(checked(request).base.description_failure.has_value(), "Malformed model text is isolated from host policy");
+
+    auto start = event("session_start");
+    start.ledger = {};
+    start.cooperative_description_version = 1;
+    start.event.body.set("source", addon::Json_value("load"));
+    const auto accepted = checked(start).base;
+    require(accepted.helper_response && json::text(*accepted.helper_response, "cooperative_description").empty() &&
+        json::member(*accepted.helper_response, "cooperative_description_version").as_integer() == 1,
+        "Activation only negotiates the optional return route; it cannot claim the host recorded a description");
+}
+
 } // namespace
 
 int main()
@@ -413,6 +453,7 @@ int main()
         context_and_execution();
         root_and_child_models();
         child_details_and_nested();
+        cooperative_descriptions();
         std::puts("PASS omp native lifecycle and SDK feature contracts");
         return 0;
     }

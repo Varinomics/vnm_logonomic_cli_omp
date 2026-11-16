@@ -12,7 +12,7 @@
       "attention": "supported",
       "paired_attention": "supported",
       "subagents": "supported",
-      "cooperative_description": "unsupported",
+      "cooperative_description": "supported",
       "blockable_completion": "unsupported"
     }
   }

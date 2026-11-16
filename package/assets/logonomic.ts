@@ -4,14 +4,16 @@ import { isAbsolute, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { nestedTaskSnapshots } from "./native_children.ts";
 import { sampleNativeCatalog } from "./native_model_catalog.ts";
+import { descriptionToolName, registerDescriptionTool } from "./native_description.ts";
+import type { DescriptionReply } from "./native_description.ts";
 import { nativeWakeState, startWakeBridge } from "./native_wake.ts";
 import type { WakeBridge } from "./native_wake.ts";
 
 type Fact = string | boolean | number | Fact[] | { [key: string]: Fact };
 type Facts = Record<string, Fact>;
-type Request = { operation: "event" | "context"; name: string; body: Facts };
-type Reply = { committed: boolean; accepted: boolean; instruction?: string; child_state_version?: number;
-    model_catalog_version?: number };
+type Request = { operation: "event" | "context" | "description"; name: string; body: Facts };
+type Reply = DescriptionReply & { instruction?: string; child_state_version?: number;
+    model_catalog_version?: number; cooperative_description_version?: number };
 type Transport = (request: Request, signal: AbortSignal) => Promise<Reply | undefined>;
 type Activation = {
     sessionId: string;
@@ -30,6 +32,7 @@ type Activation = {
     catalogEnabled: boolean;
     catalogPending: boolean;
     catalogSnapshot?: string;
+    descriptionEnabled: boolean;
 };
 type Child = { owner: Activation; sessionFile: unknown; parentToolCallId: unknown; active: boolean;
     modelSnapshot?: string; pendingModel?: string };
@@ -98,6 +101,8 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     let shutdownDrainExpired = false;
     let running: AbortController | undefined;
     let contextRequest: AbortController | undefined;
+    let descriptionRequest: AbortController | undefined;
+    let queuedDescriptions = 0;
     let stopModelObserver: (() => void) | undefined;
     let wakeBridge: WakeBridge | undefined;
     let wakeOwner: Activation | undefined;
@@ -152,6 +157,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                     if (extra.model && !extra.agent_id) owner.modelSnapshot = JSON.stringify(extra.model);
                     if (reply.child_state_version === 1) owner.childState = true;
                     if (reply.model_catalog_version === 1) owner.catalogEnabled = true;
+                    if (reply.cooperative_description_version === 1) owner.descriptionEnabled = true;
                     if (body.child_loss) owner.childLossReported = true;
                 }
                 return reply?.committed === true && reply.accepted === true;
@@ -161,6 +167,39 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         pending = work.then(() => {}, () => {});
         return work;
     };
+
+    const descriptionInstalled = registerDescriptionTool(pi, ctx => {
+        const owner = current(ctx);
+        return owner?.descriptionEnabled && !owner.lost && !shuttingDown ? owner : undefined;
+    }, (binding, requestId, payload, ctx, signal) => {
+        if (queuedDescriptions >= 4) return Promise.resolve({ committed: true, accepted: false, reason: "description_busy" });
+        ++queuedDescriptions;
+        const work = pending.then(async (): Promise<Reply | undefined> => {
+            --queuedDescriptions;
+            const owner = current(ctx);
+            if (!owner || binding !== owner || owner.lost || !owner.descriptionEnabled || shuttingDown || signal?.aborted) {
+                return { committed: true, accepted: false, reason: "submission_cancelled" };
+            }
+            const controller = new AbortController();
+            const cancel = () => controller.abort();
+            signal?.addEventListener("abort", cancel, { once: true });
+            descriptionRequest = controller;
+            running = controller;
+            try {
+                return await transport({ operation: "description", name: "model_description", body: {
+                    session_id: binding.sessionId, activation_nonce: binding.nonce, request_id: requestId,
+                    description: { kind: payload.kind, ...(payload.title !== undefined ? { title: payload.title } : {}),
+                        ...(payload.summary !== undefined ? { summary: payload.summary } : {}) },
+                } }, controller.signal);
+            } finally {
+                signal?.removeEventListener("abort", cancel);
+                if (descriptionRequest === controller) descriptionRequest = undefined;
+                if (running === controller) running = undefined;
+            }
+        });
+        pending = work.then(() => {}, () => {});
+        return work;
+    });
 
     const modelFacts = (provider: unknown, model: unknown, effort: unknown): Facts =>
         identity(provider, 512) && identity(model, 512) ? {
@@ -305,11 +344,12 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const sessionId = ctx.sessionManager.getSessionId();
         if (!identity(sessionId)) return;
         const previous = activation?.nonce;
+        descriptionRequest?.abort();
         stopModelObserver?.();
         stopModelObserver = undefined;
         const owner: Activation = { sessionId, nonce: freshId(), turnId: "", sequence: 0,
             lost: false, lossReported: false, pendingContext: "", childState: false, childLossReported: false,
-            interrupted: false, catalogEnabled: false, catalogPending: false };
+            interrupted: false, catalogEnabled: false, catalogPending: false, descriptionEnabled: false };
         activation = owner;
         wakeOwner = undefined;
         wakeContext = undefined;
@@ -360,7 +400,11 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         if (owner === activation && !shuttingDown && owner.pendingContext) {
             // Repeated native preparation attempts retain accepted context
             // until agent_start proves the prepared prompt entered the loop.
-            return { message: { customType: "logonomic", content: owner.pendingContext, display: false } };
+            const descriptionRoute = descriptionInstalled && owner.descriptionEnabled &&
+                pi.getActiveTools?.().includes(descriptionToolName)
+                ? `\nFor the Logonomic title and working-summary requests above, use ${descriptionToolName}; its result reports the host's disposition.`
+                : "";
+            return { message: { customType: "logonomic", content: owner.pendingContext + descriptionRoute, display: false } };
         }
     });
 
@@ -540,6 +584,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         unsubscribeLifecycle();
         unsubscribeProgress();
         contextRequest?.abort();
+        descriptionRequest?.abort();
         // Native shutdown awaits handlers for at most 2000 ms. Give already
         // captured facts one helper-sized drain window, then reserve time for
         // wrapper retirement and the final shutdown/degradation delivery.

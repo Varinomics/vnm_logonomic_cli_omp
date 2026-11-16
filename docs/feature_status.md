@@ -33,9 +33,9 @@ Context and working-directory evidence is specified in
 | Native source-profile accounts | Implemented | `accounts@2` discovers and resolves native filesystem profiles, including explicit external agent directories, and verifies versioned selected-account preparation. This identifies a source profile, not a historical provider principal. |
 | Authentication operations | Not implemented | Native launches retain their own credentials. Native OAuth-provider availability alone does not establish authentication for all configured API-key/custom providers or a managed login operation. |
 | Quota reporting | Not implemented | No native account-scoped quota observation is translated into a host contract. |
-| Cooperative descriptions | Not implemented | Child definition labels are reported; no model-produced description protocol is requested or consumed. |
-| Host-blockable completion | Unavailable | Native `session_stop` is a veto/continuation gate, not a completed turn. This package does not make host policy part of that native gate. |
-| Host turn-origin correlation | Not implemented | The extension assigns local turn IDs; it has no confirmed host-origin ID for every native prompt. |
+| Cooperative descriptions | Implemented with host negotiation | Public native `logonomic_describe_session` returns explicit model-authored titles and working summaries through `cooperative-description@1`. The host applies its existing policies under an exact native activation guard; carrier acceptance alone is not a successful description receipt. See [cooperative descriptions](cooperative_descriptions.md). |
+| Host-blockable completion | Undeclared | Native `session_stop` supports an awaited veto or continuation, but the current authenticated host contract supplies no completion-policy decision. Its title-specific `instruction_required` flag cannot authorize a veto. |
+| Host turn-origin correlation | Undeclared | Native turn IDs and exact wake targets do not establish a confirmed host origin for a subsequent turn. The current lifecycle contract has no authoritative host turn-origin record. |
 
 The SDK capability files are the adoption authority. A row describing a
 native possibility is not a declaration that Logonomic can use it yet.

@@ -154,6 +154,23 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
     addon::Attention_classification_result result;
     const auto& body = request.event.body;
     const auto& name = request.event.name;
+    if (name == "model_description") {
+        if (request.cooperative_description_version != 1 || request.description_failure ||
+            !json::exact_keys(body, {"session_id", "activation_nonce", "request_id", "description"}) ||
+            !matches_activation(request) || json::text(body, "activation_nonce") != request.transition_nonce)
+        {
+            return result;
+        }
+        auto submission = json::member(body, "description");
+        if (!submission.is_object() || !json::only_keys(submission, {"kind", "title", "summary"})) return result;
+        submission.set("provider_session_id", json::member(body, "session_id"));
+        submission.set("transition_nonce", json::member(body, "activation_nonce"));
+        submission.set("request_id", json::member(body, "request_id"));
+        addon::Contract_failure failure;
+        result.base.description_submission = addon::decode_description_submission(submission, &failure);
+        if (!result.base.description_submission) result.base.description_failure = std::move(failure);
+        return result; // An explicit description submission supplies no lifecycle fact.
+    }
     if (!json::only_keys(body, {"session_id", "activation_nonce", "previous_nonce", "event_id", "sequence",
             "turn_id", "source", "session_file", "terminal", "stop_reason", "request_id", "agent_id",
             "agent_label", "status", "context", "execution", "model", "child", "child_loss", "children", "catalog"}) ||
@@ -195,10 +212,12 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
         }
         result.base.classification = addon::Classification::TRANSITION;
         result.base.transition = source == "resume" ? addon::Transition_kind::RESUME : addon::Transition_kind::START;
-        if (request.child_state_version == 1 || request.model_catalog_version == 1) {
+        if (request.child_state_version == 1 || request.model_catalog_version == 1 ||
+            request.cooperative_description_version == 1) {
             auto reply = addon::Json_value::object();
             if (request.child_state_version == 1) reply.set("child_state_version", addon::Json_value(1));
             if (request.model_catalog_version == 1) reply.set("model_catalog_version", addon::Json_value(1));
+            if (request.cooperative_description_version == 1) reply.set("cooperative_description_version", addon::Json_value(1));
             result.base.helper_response = std::move(reply);
         }
     }
