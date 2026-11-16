@@ -179,7 +179,7 @@ public:
                 "Every page must preserve the complete selected account record");
         require(page->cache_candidate.has_value(), "The usage page must name its sealed candidate");
         const auto manifest = addon::validate_usage_cache_candidate(*page->cache_candidate,
-            request.context.profile_storage->root, request.context.account_context, {}, &failure);
+            request.context.profile_storage->root, request.context.account_context, [] { return false; }, &failure);
         require(manifest.has_value(), "The returned candidate must already be fully sealed and valid: " +
             failure.reason_code + " " + failure.detail);
         return *page;
@@ -264,7 +264,7 @@ void discard_and_retention(const char* executable)
     require(f.invoke().reason == "usage_native_event_conflict", "Contradictory native evidence cannot replace or maximize accepted counters");
     addon::Contract_failure failure;
     require(addon::validate_usage_cache_candidate(*rewritten.cache_candidate, f.request.context.profile_storage->root,
-        {}, {}, &failure).has_value(), "A failed replacement must leave the previously selected cache untouched");
+        {}, [] { return false; }, &failure).has_value(), "A failed replacement must leave the previously selected cache untouched");
 }
 
 void dimensions_and_rejections(const char* executable)
