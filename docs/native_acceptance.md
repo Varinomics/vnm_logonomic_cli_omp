@@ -148,6 +148,32 @@ missing lifecycle response still causes explicit observation loss.
 
 ## Qualification boundaries
 
+The separate `tests/native_usage_acceptance.py` gate passed against the same
+official OMP 18.20.2/Bun 1.4.4 Linux runtime. It uses the supported
+`SessionManager.inMemory`, `createBranchedSession`, `discardEntryDurably` and
+`appendModelUsage` APIs to author and transform fixture accounting entries.
+The harness serializes those exact returned records, then invokes actual
+packaged accounts and usage operations through the SDK simulator. A copied
+100-token fixture event counted once; its discard rewrite plus a 7-token
+auxiliary event counted 107; selected-cache replay retained 107 after the
+source files were removed; explicit reset reconstructed zero. The returned
+cache manifests and ledger hashes matched their seals.
+
+```sh
+python3 /absolute/path/source/tests/native_usage_acceptance.py \
+  --runtime /absolute/path/native-runtime \
+  --package /absolute/path/build/package/logonomic.cli.omp \
+  --host-simulator /absolute/path/build/sdk/logonomic_cli_addon_host_simulator \
+  --artifacts /absolute/path/native-usage-evidence
+```
+
+This fixture performs no model request. Its amounts are test inputs, and its
+storage serialization does not claim that the native runtime successfully
+wrote a persistent session in this environment. The native transformation and
+the adapter's retained accounting are the qualified boundaries; native locks
+are unchanged. See [usage accounting](usage_accounting.md) for source identity,
+partial history, resource limits and unsupported storage.
+
 The native CLI executes real production paths; the external model and host
 services remain fixtures. Passing this gate does not qualify authenticated
 provider accounts, a full Logonomic graphical host, Windows or macOS, every
