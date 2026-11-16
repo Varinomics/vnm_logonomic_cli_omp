@@ -134,7 +134,7 @@ def main():
         elif mode == "home_cwd":
             arguments += ["--cwd", str(home), "--session", "./work"]
         elif mode == "home_empty_cwd":
-            arguments += ["--cwd", "", "--session", "./work"]
+            arguments += ["--cwd=", "--session", "./work"]
         elif mode == "home_absolute":
             arguments += ["--session", str(exact)]
         if name == "registry_custom":

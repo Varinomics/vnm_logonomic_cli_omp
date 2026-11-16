@@ -212,7 +212,7 @@ void implicit_home_working_directory(const char* executable)
 #endif
     f.request.launcher.script_body = "omp --session-dir ./history";
     require(f.profile().explicit_session_directory == f.home / "tmp/history", "Native relocation also applies to session directories");
-    f.request.launcher.script_body = "omp --cwd ./other --cwd \"\" --session ./work";
+    f.request.launcher.script_body = "omp --cwd ./other --cwd= --session ./work";
     require(f.profile().explicit_session_file == f.home / "tmp/work",
         "A last empty native cwd value restores implicit startup selection");
     f.request.launcher.script_body = "omp --allow-home --session ./work";
