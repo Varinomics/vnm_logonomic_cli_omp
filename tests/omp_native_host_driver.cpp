@@ -5,6 +5,7 @@
 #include <logonomic_cli_addon/json_utilities.h>
 
 #include <cstdio>
+#include <cstdint>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -45,7 +46,7 @@ int main(int argc, char** argv)
             return 1;
         }
         const auto id = simulator.invoke(
-            {json::text(*request, "capability_id"), static_cast<int>(version->as_integer())},
+            {json::text(*request, "capability_id"), static_cast<std::uint16_t>(version->as_integer())},
             json::text(*request, "operation"), json::member(*request, "payload"), 5000);
         const auto result = simulator.wait_outcome(id, 8000);
         int exit_code = -1;
