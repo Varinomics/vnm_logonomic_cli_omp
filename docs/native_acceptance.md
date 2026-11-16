@@ -9,7 +9,8 @@ SDK conformance and scripted parser/extension tests.
 
 The harness currently requires **Linux x86-64**, Python 3.11 or later, the
 official OMP package, Bun, the assembled add-on, its `omp_rpc_tests` driver and
-the SDK host simulator. The inspected native contract is documented in
+the SDK host simulator. The wake scenario also uses `omp_native_host_driver`.
+The inspected native contract is documented in
 [native_contract.md](native_contract.md); the implementation does not impose
 the version used by this acceptance procedure as a compatibility cutoff.
 
@@ -49,6 +50,7 @@ python3 /absolute/path/source/tests/native_acceptance.py \
   --driver /absolute/path/build/omp_rpc_tests \
   --package /absolute/path/build/package/logonomic.cli.omp \
   --host-simulator /absolute/path/build/sdk/logonomic_cli_addon_host_simulator \
+  --host-driver /absolute/path/build/omp_native_host_driver \
   --artifacts /absolute/path/native-evidence \
   --scenario all
 ```
@@ -56,6 +58,13 @@ python3 /absolute/path/source/tests/native_acceptance.py \
 The example simulator path applies to a local SDK override. Use the actual
 generated path when FetchContent or an embedding build supplies the SDK.
 Run one named scenario when a change affects only that native boundary.
+The stock simulator correctly redacts private wake bindings in its printable
+transcript. The test-only native host driver uses the same public SDK
+`Host_simulator` validation, invocation, typed outcome and shutdown APIs to
+receive the genuine package response in memory. The harness applies that
+response directly; it neither reconstructs a binding from registry files nor
+disables transcript redaction. Wake evidence records invocation status and
+identity-match assertions, not private bindings or endpoint credentials.
 
 ## What the gate establishes
 
@@ -93,7 +102,8 @@ fixture processes. The harness makes no paid model requests and performs no
 global OMP configuration changes.
 
 `metadata.json` records the native versions and hashes of the harness,
-driver, simulator, native entry point, Bun and every assembled package file.
+driver, simulator, optional typed host driver, native entry point, Bun and every
+assembled package file.
 `summary.json` records completed scenarios. Per-scenario evidence includes
 SDK host requests and transcripts, the prepared process/artifacts, raw native
 RPC frames, incremental inspection results and model requests. Delegation
@@ -114,6 +124,27 @@ driver for the managed interactive extension. Structured task preparation
 intentionally rejects directory overrides, so this gate does not ask it to
 change the host-owned task directory. Neither path changes that production
 scope rule.
+
+## Additional native observations qualified on Linux
+
+The following affected scenarios passed against official OMP 18.20.2 and Bun
+1.4.4 with the isolated local model. Each run retained its own immutable source,
+package hashes, native output and SDK classifications; passing one scenario
+does not imply every scenario in the table above has passed.
+
+| Scenario | Observed result |
+| --- | --- |
+| Idle model change | One original model request; native idle model/thinking selection changed and reached `model-state@1` without another request or invented turn. |
+| Installed compaction | Two user turns followed by real native compaction. The native stored compaction ID matched the extension event and SDK context update. Five local model requests included native auxiliary summary calls. |
+| Distinct native directory | One request, five lifecycle/sample events including clean shutdown, and four confirmed directory updates carrying the native `--cwd` path rather than the process working directory. |
+| Same-process idle wake | Two real model requests, two native turns, one root activation and one exact first user message. The second request followed one actual adapter notify and reused the native PID/session without editor input. Native shutdown exited successfully. |
+
+The immediate-EOF directory test initially exposed a shutdown race: an
+authenticated committed lifecycle response could be discarded while the helper
+was being canceled during later journal release. The extension now retains the
+committed response after reaping its helper. The separate stalled-ack fixture
+and the corrected real native directory/wake runs passed. An uncommitted or
+missing lifecycle response still causes explicit observation loss.
 
 ## Qualification boundaries
 

@@ -32,9 +32,10 @@ remains an allowlist when the package module is added.
 | Context and working directory | Native occupancy, installed compaction events and current directory observations, correlated to the active conversation. |
 | Active model observations | Root provider/model/reasoning samples, including idle selection changes, and serving-model facts for admitted direct children through optional `model-state@1`. |
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
-| Direct subagents | Native task/eval child registry ids and start/stop events, kept separate from root completion. |
+| Task/eval children | Native child identities and start/stop events, plus optional descriptions, progress, outcomes and bounded nested Task snapshots through `child-state@1`. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |
 | Host-authored initial prompt | One exact first user message for a fresh supported interactive invocation, acknowledged through `interactive-initial-prompt@1`. |
+| Mailbox wake | A private binding targets the exact live interactive activation; native aside delivery can start an idle turn without editor input. |
 | Structured work | Native RPC v2 readiness/negotiation, bounded incremental inspection, exact prompt delivery and verified terminal evidence. |
 | Delegated work and model selection | Exact requested model and supported reasoning-level selection, with native state and response validation through the same RPC path. |
 | Conversation export | Exact captured JSONL session, selected native branch, full or compact text, Markdown, and highlighted conversation formats. |
@@ -53,9 +54,14 @@ Yolofy adds native `--yolo`; Unyolofy removes recognized invocation bypasses.
 Unyolofy preserves saved native policy, which may itself permit tools without
 asking. Neither action edits the native configuration or imposes a new policy.
 
-The direct-subagent feature covers immediate task-tool and eval `agent()`
-children on the public session bus. It does not promise the private whole
-descendant tree, `/tan` clones, advisor activity, or child-local dialogs.
+The child feature covers immediate task-tool and eval `agent()` children on the
+public session bus. With `child-state@1`, admitted direct-child progress can
+also carry bounded nested Task snapshots with real execution evidence and
+parent/depth relationships. This does not promise a complete descendant tree,
+`/tan` clones, advisor activity, or child-local dialogs. The real Task acceptance
+test remains blocked in the current Linux workspace by OMP's native child-file
+lock; contract fixtures establish the mappings without claiming a successful
+native child run here.
 Generic dialogs from other extensions have no paired native observation
 surface and are not covered. The package never uses the native `session_stop`
 veto gate as a completed-turn signal.
@@ -71,6 +77,10 @@ implemented and missing host integrations.
 The [native observation contract](docs/native_observations.md) describes context,
 model, compaction and directory sampling boundaries. [Conversation export](docs/conversation_export.md)
 documents exact source selection and the persisted formats it can read.
+[Native mailbox wake](docs/native_wake.md) documents activation binding,
+native pause/attention policy, and the uncertain return after void native
+admission. The separate [native acceptance](docs/native_acceptance.md) records
+the successful same-process idle-wake check.
 
 Noninteractive modes, compound scripts, positional startup prompts, unknown
 extension-owned launch flags, and Windows `.cmd`/`.ps1` wrappers retain their
