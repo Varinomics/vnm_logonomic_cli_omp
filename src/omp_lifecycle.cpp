@@ -156,7 +156,7 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
     const auto& name = request.event.name;
     if (!json::only_keys(body, {"session_id", "activation_nonce", "previous_nonce", "event_id", "sequence",
             "turn_id", "source", "session_file", "terminal", "stop_reason", "request_id", "agent_id",
-            "agent_label", "status", "context", "execution", "model", "child", "child_loss", "children"}) ||
+            "agent_label", "status", "context", "execution", "model", "child", "child_loss", "children", "catalog"}) ||
         !identity(body, "session_id") || !identity(body, "event_id") ||
         !identity(body, "turn_id", true) || !identity(body, "request_id", true) ||
         !identity(body, "agent_id", true) || !sequence(body) ||
@@ -195,8 +195,11 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
         }
         result.base.classification = addon::Classification::TRANSITION;
         result.base.transition = source == "resume" ? addon::Transition_kind::RESUME : addon::Transition_kind::START;
-        if (request.child_state_version == 1) {
-            result.base.helper_response = json::object({{"child_state_version", addon::Json_value(1)}});
+        if (request.child_state_version == 1 || request.model_catalog_version == 1) {
+            auto reply = addon::Json_value::object();
+            if (request.child_state_version == 1) reply.set("child_state_version", addon::Json_value(1));
+            if (request.model_catalog_version == 1) reply.set("model_catalog_version", addon::Json_value(1));
+            result.base.helper_response = std::move(reply);
         }
     }
     else {
@@ -210,7 +213,7 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
         if (name == "task:subagent:snapshot") {
             return classify_nested(request);
         }
-        if (name == "message_end" || name == "session_compact" || name == "model_observation" || name == "task:subagent:progress" ||
+        if (name == "message_end" || name == "session_compact" || name == "model_observation" || name == "model_catalog" || name == "task:subagent:progress" ||
             name == "retry_fallback_applied" || name == "retry_fallback_succeeded" || name == "task:subagent:loss") {
             // These optional native samples carry no turn/lifecycle inference.
             append_native_telemetry(request, result.base);

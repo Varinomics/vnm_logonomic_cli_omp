@@ -1,4 +1,5 @@
 #include "omp_telemetry.h"
+#include "omp_model_catalog.h"
 
 #include <logonomic_cli_addon/json_utilities.h>
 
@@ -170,6 +171,7 @@ void append_native_telemetry(
     append_execution(request, result);
     append_model(request, result);
     append_child(request, result);
+    append_native_catalog(request, result);
 }
 
 } // namespace omp
