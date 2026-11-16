@@ -46,6 +46,7 @@ for (const path of [
     // The *whole* input may be opaque even when all delimiter fragments look
     // local; do not authorize it by independently accepting `Makefile:12`.
     "Makefile:12 other", "Makefile:12,other", "Makefile:raw other", "Makefile:12;other",
+    "custom:raw ", "custom:12 ", "custom:raw\t", "custom:conflicts\u00a0",
     "C://repo/file", String.raw`C:\\repo\file`, String.raw`C:/\repo/file`,
     "xd:/mcp_host_report_result", "xd://mcp_host_report_result:raw",
     "xd://mcp_host_report_result?query=1", "xd://mcp_host_report_result;review.txt",

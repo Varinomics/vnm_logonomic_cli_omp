@@ -85,7 +85,15 @@ const SELECTOR = String.raw`(?:raw|conflicts|-?\d+(?:[-+]\d+)?(?:,\d+(?:[-+]\d+)
 const FILE_SELECTOR_PATH = new RegExp(String.raw`^[^:]+(?::${SELECTOR})+$`, "i");
 const WINDOWS_DRIVE = /^(?:@)?(?:\\\\\?\\)?[a-z]:[\\/](?![\\/])/i;
 
+function filesystemColons(path: string): boolean {
+    const withoutDrive = path.replace(WINDOWS_DRIVE, "/");
+    return !withoutDrive.includes(":") || FILE_SELECTOR_PATH.test(withoutDrive);
+}
+
 function filesystemSpelling(value: string): boolean {
+    // read attempts routing before filesystem trimming. `custom:raw ` is an
+    // opaque URI even though `custom:raw` has a native selector exclusion.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !filesystemColons(value)) return false;
     const trimmed = value.trim();
     const path = trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length > 1
         ? trimmed.slice(1, -1) : trimmed;
@@ -93,8 +101,7 @@ function filesystemSpelling(value: string): boolean {
     // Preserve native absolute drive and extended-length paths. Two separators
     // after a drive are excluded: glob normalizes backslashes to slashes and
     // native URI extraction then treats C:// as a hierarchical scheme.
-    const withoutDrive = path.replace(WINDOWS_DRIVE, "/");
-    return !withoutDrive.includes(":") || FILE_SELECTOR_PATH.test(withoutDrive);
+    return filesystemColons(path);
 }
 
 function filesystemPaths(value: string): boolean {
