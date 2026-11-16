@@ -266,6 +266,12 @@ class Native_case:
         settings = {"enabledProviders": ["logonomic-fixture"],
             "telemetry": {"otlpExportEnabled": False}, "marketplace": {"autoUpdate": "off"},
             "power": {"sleepPrevention": "off"}}
+        if name == "initial-prompt":
+            # The isolated local provider is already configured. The ordinary
+            # native setup wizard otherwise waits for a human account choice
+            # before main.ts dispatches startup messages; no setup-version or
+            # account state is fabricated and production preparation sets none.
+            settings["startup"] = {"setupWizard": False, "checkUpdate": False, "quiet": True}
         if name in ("child", "nested-child"):
             settings["modelRoles"] = {"task": CHILD_MODEL, "smol": MODEL}
         if name == "compaction":

@@ -104,6 +104,10 @@ work or changes native state. This separates native delivery from the package's
 admission decisions. The initial-prompt gate compares the native user message,
 because the provider transport may combine native date/context notices with
 that message when forming its API request.
+The PTY fixture disables the ordinary first-run setup wizard, startup update
+check and splash through native `startup` settings. Its local provider is already
+configured. This avoids waiting at the provider-setup screen; production
+preparation does not alter these settings or fabricate an authenticated account.
 
 ## Qualification boundaries
 
