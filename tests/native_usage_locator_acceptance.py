@@ -164,7 +164,7 @@ def main():
         selected = invoke(case, "accounts", 2, "resolve", accounts_request, "accounts-resolve")
         account = None
         if isinstance(expected, str):
-            require(all(item["status"] != "success" and item.get("reason_code") == expected for item in (inventory, selected)),
+            require(all(item["status"] != "success" and item.get("reason") == expected for item in (inventory, selected)),
                     f"Ambiguous native cwd was not refused by profile inspection: {name}")
         else:
             require(inventory["status"] == selected["status"] == "success", f"Exact profile resolution failed: {name}")
@@ -181,9 +181,9 @@ def main():
             "cache_selection": {"version": 1, "accepted": None, "candidate_root": str(storage / "candidate")}}, "usage")
         if expected is None or isinstance(expected, str):
             reason = expected if expected is not None else "usage_native_format_unsupported"
-            require(response["status"] != "success" and response.get("reason_code") == reason,
+            require(response["status"] != "success" and response.get("reason") == reason,
                     f"Unsupported exact source was not refused: {response}")
-            results[name] = {"status": response["status"], "reason_code": response["reason_code"]}
+            results[name] = {"status": response["status"], "reason": response["reason"]}
             continue
         require(response["status"] == "success", f"Exact source scan failed: {name}: {response}")
         page = response["payload"]
