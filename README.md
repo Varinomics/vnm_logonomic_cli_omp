@@ -30,11 +30,13 @@ remains an allowlist when the package module is added.
 | Root session lifecycle | Native session load, successful switch, clear, branch/tree change and shutdown. Each activation has separate correlation even when `/clear` keeps the native UUID. |
 | Root working and completion | Native agent-loop events and continuation decisions, including the terminal callback before prompt unwinding. Successful, failed and interrupted outcomes remain distinct. |
 | Context and working directory | Native occupancy, installed compaction events and current directory observations, correlated to the active conversation. |
+| Active model observations | Root provider/model/reasoning samples, including idle selection changes, and serving-model facts for admitted direct children through optional `model-state@1`. |
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
 | Direct subagents | Native task/eval child registry ids and start/stop events, kept separate from root completion. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |
 | Structured work | Native RPC v2 readiness/negotiation, bounded incremental inspection, exact prompt delivery and verified terminal evidence. |
 | Delegated work and model selection | Exact requested model and supported reasoning-level selection, with native state and response validation through the same RPC path. |
+| Conversation export | Exact captured JSONL session, selected native branch, full or compact text, Markdown, and highlighted conversation formats. |
 
 Each package declares these capabilities in `package/capabilities`;
 Logonomic adopts only the intersection supported by its host and the running
@@ -43,8 +45,9 @@ version ceiling or arbitrary tested-version minimum. Native runtime evidence
 guards completion; a missing continuation field degrades observation instead
 of manufacturing success.
 
-Model selection applies to delegated tasks. This version does not list available
-models or report the active interactive model, provider, or reasoning level.
+Model selection applies to delegated tasks. Interactive model observations use
+the optional `model-state@1` host contract; older hosts can still use the other
+features. This version does not list available models.
 Yolofy adds native `--yolo`; Unyolofy removes recognized invocation bypasses.
 Unyolofy preserves saved native policy, which may itself permit tools without
 asking. Neither action edits the native configuration or imposes a new policy.
@@ -64,15 +67,16 @@ reports whichever native identity actually loaded. See
 [the native contract](docs/native_contract.md) for the evidence and complete
 coverage boundaries, and [feature coverage](docs/feature_status.md) for the
 implemented and missing host integrations.
-The [native observation contract](docs/native_observations.md) describes context
-measurement, compaction and directory sampling boundaries.
+The [native observation contract](docs/native_observations.md) describes context,
+model, compaction and directory sampling boundaries. [Conversation export](docs/conversation_export.md)
+documents exact source selection and the persisted formats it can read.
 
 Noninteractive modes, compound scripts, positional startup prompts, unknown
 extension-owned launch flags, and Windows `.cmd`/`.ps1` wrappers retain their
 ordinary launcher behavior without interactive lifecycle promises. Supported
 Windows preparation uses a native `omp.exe`; POSIX executable/shebang
 launchers are supported. Credentials, native account management, quota,
-usage accounting, and conversation export remain outside this package's
+and usage accounting remain outside this package's
 declared capabilities.
 
 ## Building

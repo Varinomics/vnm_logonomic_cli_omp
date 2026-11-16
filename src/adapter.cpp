@@ -1,4 +1,5 @@
 #include "omp_provider.h"
+#include "omp_conversation.h"
 #include "omp_launcher_approval.h"
 #include "omp_lifecycle.h"
 #include "omp_rpc.h"
@@ -29,6 +30,10 @@ void invoke(addon::Invocation_context& context)
         else
         if (capability == "launcher-approval") {
             addon::handle_launcher_approval(context, omp::launcher_approval_rules());
+        }
+        else
+        if (capability == "conversation-export") {
+            addon::handle_conversation_export(context, omp::export_conversation);
         }
         else
         if (capability == "structured-session") {
@@ -65,6 +70,7 @@ int main()
         {"managed-assets", 1}, {"lifecycle-events", 2}, {"helper-ingress", 2}, {"attention-kind", 1},
         {"model-context-delivery", 2}, {"coordination-delivery", 1},
         {"context-state", 2}, {"execution-context", 1}, {"model-state", 1},
+        {"conversation-export", 1},
     };
     addon::Adapter_runtime runtime(std::move(options));
     runtime.set_invoke_handler(invoke);
