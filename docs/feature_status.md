@@ -4,6 +4,8 @@ This table describes implemented add-on contracts. It does not claim that
 every native oh-my-pi feature is exposed by Logonomic. Native source evidence
 and the separate runtime checks are described in [the native contract](native_contract.md)
 and [native acceptance](native_acceptance.md).
+Context and working-directory evidence is specified in
+[native observations](native_observations.md).
 
 | Feature | Current add-on coverage | Boundary or missing connection |
 | --- | --- | --- |
@@ -18,8 +20,8 @@ and [native acceptance](native_acceptance.md).
 | Active root/child model and reasoning reporting | Not implemented | Native state exists, but the current SDK lifecycle/result schemas have no active-model observation field. |
 | Available-model catalog | Not implemented | Native `get_available_models` exists. The add-on makes no listing request; `delegated-model-selection@1` only selects values. |
 | Host instructions to native model | Implemented | Hidden native message, fenced to the captured activation. This is instruction delivery, not model identity reporting. |
-| Context occupancy and compactions | Not implemented | Native measurements/events need the separate SDK `context-state@2` producer; billing totals cannot stand in for occupancy. |
-| Native working directory reporting | Not implemented | Launch preparation preserves requested directory; live native changes need `execution-context@1` observations. |
+| Context occupancy and compactions | Implemented | `context-state@2` uses native occupancy measurements and successful installed compaction events; missing measurements remain unknown. Native runtime acceptance is separate from contract fixtures. |
+| Native working directory reporting | Implemented | `execution-context@1` samples native `ctx.cwd` at public activation, turn, message and compaction events; no immediate idle-change notification is promised. |
 | Host wake | Not implemented | Instruction delivery alone does not initiate a native turn. An attached, activation-scoped native delivery endpoint is required. |
 | Interactive startup prompt adaptation | Not implemented | The current preparation grammar refuses positional prompts. Native prompt/attachment boundaries must be preserved when inserting the extension. |
 | Structured/delegated task execution | Implemented | Native RPC v2 prompt result plus settled evidence; host retains process cancellation and budget authority. |

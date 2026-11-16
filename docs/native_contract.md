@@ -198,7 +198,13 @@ does not establish that permission dialogs will appear.
 
 The editor retains profile, model, configuration, prompt and tool-selection
 operands. It rejects compound scripts, unknown option arities, management
-commands and unsupported mode values. The extension-shadowable `--plan`
+commands and unsupported mode values. This includes `help` and OMP's reserved
+top-level plugin words (`extensions`, `list`, `remove`, `uninstall`,
+`marketplace`, `discover`, `upgrade`, `enable`, `disable`) as the first
+positional operand: `cli-commands.ts` dispatches or rejects those using the
+raw first argument, so moving a bypass before or away from them can change
+a command into prompt text or the reverse. Explicit `launch` or `--` keeps
+such words in a stable prompt role. The extension-shadowable `--plan`
 option is deliberately outside this bounded editing grammar. Explicit
 `--extension`, `--hook`, and `--trusted-extension` operands are also left to
 the ordinary launcher: OMP can join split Windows module paths, which is

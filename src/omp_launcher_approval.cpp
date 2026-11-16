@@ -32,6 +32,10 @@ const logonomic::cli_addon::Launcher_approval_rules& launcher_approval_rules()
         },
         .session_commands = {"launch"},
         .unsupported_commands = {
+            // resolveCliArgv treats help specially, outside the command table.
+            // Its reserved-word guard also depends on raw argv[0]. Adding or
+            // removing a leading bypass must not cross either dispatch boundary.
+            "help", "extensions", "list", "remove", "uninstall", "marketplace", "discover", "upgrade", "enable", "disable",
             "acp", "auth", "auth-broker", "auth-gateway", "agents", "anonymize", "bench", "browser-relay",
             "cleanse", "collab", "commit", "completions", "__complete", "compress", "config", "dry-balance",
             "find", "gc", "grep", "gallery", "git", "grievances", "images", "img", "if-bench", "install",

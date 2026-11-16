@@ -133,6 +133,36 @@ void launcher_approval()
     require(key("omp --model native/other").key != plain.key &&
         key("omp --model native/exact", "OMP_PROFILE=other").key != plain.key,
         "Model and profile/account environment changes must remain distinct launchers");
+
+    // Native cli-commands.ts resolveCliArgv handles `help` before launch
+    // fallback and rejects its reserved top-level words based on argv[0].
+    // These are not all members of the native registered command table.
+    for (const auto* word : {"help", "extensions", "list", "remove", "uninstall", "marketplace",
+             "discover", "upgrade", "enable", "disable"}) {
+        for (const auto& prefix : {std::string("omp "), std::string("omp --profile chosen "),
+                 std::string("omp --yolo "), std::string("omp --approval-mode=yolo ")}) {
+            const auto script = prefix + word;
+            require(transform(script, yolofy).disposition == addon::Launcher_approval_disposition::UNSUPPORTED &&
+                transform(script, unyolofy).disposition == addon::Launcher_approval_disposition::UNSUPPORTED &&
+                !key(script).supported,
+                "Approval changes and comparison must not conflate native command dispatch with prompt text");
+        }
+    }
+    for (const auto* script : {"omp marketplace add example", "omp --yolo marketplace add example",
+             "omp uninstall example@registry", "omp --auto-approve uninstall example@registry",
+             "omp help models", "omp --yolo help models"}) {
+        require(transform(script, yolofy).disposition == addon::Launcher_approval_disposition::UNSUPPORTED &&
+            transform(script, unyolofy).disposition == addon::Launcher_approval_disposition::UNSUPPORTED,
+            "The native multiword reserved-word guard and help dispatch must not be bypassed");
+    }
+    result = transform("omp launch list all files", yolofy);
+    require(result.disposition == addon::Launcher_approval_disposition::CHANGED &&
+        result.script_body == "omp launch --yolo list all files",
+        "Explicit native launch keeps reserved-looking text in its prompt role");
+    result = transform("omp --model help -- marketplace add example", yolofy);
+    require(result.disposition == addon::Launcher_approval_disposition::CHANGED &&
+        result.script_body == "omp --yolo --model help -- marketplace add example",
+        "Protected option values and post-separator text remain data during approval editing");
 }
 
 class Invocation_fixture : public addon::Invocation_context

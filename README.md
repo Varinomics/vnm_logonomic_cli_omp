@@ -29,6 +29,7 @@ remains an allowlist when the package module is added.
 | Launcher approval controls | Yolofy and Unyolofy edit native tool-approval flags in understood literal launchers while retaining other arguments and saved configuration. |
 | Root session lifecycle | Native session load, successful switch, clear, branch/tree change and shutdown. Each activation has separate correlation even when `/clear` keeps the native UUID. |
 | Root working and completion | Native agent-loop events and continuation decisions, including the terminal callback before prompt unwinding. Successful, failed and interrupted outcomes remain distinct. |
+| Context and working directory | Native occupancy, installed compaction events and current directory observations, correlated to the active conversation. |
 | Permission and question attention | Confirmed native tool approval and plan-review pairs; inferred UI `ask` execution pairs. |
 | Direct subagents | Native task/eval child registry ids and start/stop events, kept separate from root completion. |
 | Startup and turn context | Host-owned hidden custom-message content through the native `before_agent_start` hook, fenced to the captured activation. |
@@ -63,6 +64,8 @@ reports whichever native identity actually loaded. See
 [the native contract](docs/native_contract.md) for the evidence and complete
 coverage boundaries, and [feature coverage](docs/feature_status.md) for the
 implemented and missing host integrations.
+The [native observation contract](docs/native_observations.md) describes context
+measurement, compaction and directory sampling boundaries.
 
 Noninteractive modes, compound scripts, positional startup prompts, unknown
 extension-owned launch flags, and Windows `.cmd`/`.ps1` wrappers retain their
