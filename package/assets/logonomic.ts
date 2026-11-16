@@ -44,11 +44,10 @@ async function invokeHelper(request: Request, signal: AbortSignal): Promise<Repl
         });
         const chunks: Buffer[] = [];
         let size = 0;
-        let cancelled = false;
         let completed = false;
         // Closing this pipe asks the helper to cancel and reap its wrapper.
         // Killing only the helper would strand the authenticated wrapper.
-        const cancel = () => { cancelled = true; child.stdin.end(); };
+        const cancel = () => { child.stdin.end(); };
         const timer = setTimeout(cancel, 1000);
         signal.addEventListener("abort", cancel, { once: true });
         child.stdin.on("error", () => {});
@@ -62,8 +61,12 @@ async function invokeHelper(request: Request, signal: AbortSignal): Promise<Repl
             completed = true;
             clearTimeout(timer);
             signal.removeEventListener("abort", cancel);
-            if (cancelled || code !== 0) { resolve(undefined); return; }
+            if (code !== 0) { resolve(undefined); return; }
             try {
+                // The helper writes its committed response before releasing
+                // the host journal. Canceling that later release cannot revoke
+                // admission already proved by this response. We still await
+                // helper exit so its SDK-owned wrapper has been reaped.
                 const reply: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
                 if (typeof reply !== "object" || reply === null ||
                     typeof (reply as Reply).accepted !== "boolean" || typeof (reply as Reply).committed !== "boolean" ||
@@ -89,7 +92,6 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     let shuttingDown = false;
     let shutdownDrainExpired = false;
     let running: AbortController | undefined;
-    let runningLifecycle = false;
     let contextRequest: AbortController | undefined;
     let stopModelObserver: (() => void) | undefined;
     let wakeBridge: WakeBridge | undefined;
@@ -134,7 +136,6 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 (!lifecycle && owner.lost) || (shutdownDrainExpired && name !== "session_shutdown")) return false;
             const controller = new AbortController();
             running = controller;
-            runningLifecycle = lifecycle;
             const sentLoss = owner.lost;
             try {
                 const reply = await transport({ operation: "event",
@@ -149,7 +150,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 }
                 return reply?.committed === true && reply.accepted === true;
             } catch { if (lifecycle) owner.lost = true; return false; }
-            finally { if (running === controller) { running = undefined; runningLifecycle = false; } }
+            finally { if (running === controller) running = undefined; }
         });
         pending = work.then(() => {}, () => {});
         return work;
@@ -516,7 +517,9 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // This bounds teardown; it never supplies terminal-event evidence.
         const deadline = setTimeout(() => {
             shutdownDrainExpired = true;
-            if (owner && (runningLifecycle || queuedLifecycle > 0)) owner.lost = true;
+            // Queued lifecycle facts will be skipped after expiry. A running
+            // send can already have committed; its actual response decides loss.
+            if (owner && queuedLifecycle > 0) owner.lost = true;
             running?.abort();
         }, 750);
         try {

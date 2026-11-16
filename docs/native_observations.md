@@ -8,6 +8,13 @@ only when the host requests that capability. Invalid optional data leaves a vali
 adjacent lifecycle fact usable; refusal of a context-only delivery does not
 quarantine root lifecycle observation.
 
+Delivery commitment comes from the authenticated SDK response. The helper writes
+that response before releasing the host's replay journal; cancellation during
+that later acknowledgment does not revoke the already admitted event. The
+extension still waits for helper exit and wrapper reaping. A shutdown deadline
+reports loss for skipped queued lifecycle facts or an actually uncommitted send,
+not merely for an in-flight post-commit journal release.
+
 ## Context occupancy and compactions
 
 `context-state@2` samples `ctx.getContextUsage()` on native session activation,

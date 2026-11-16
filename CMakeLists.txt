@@ -108,6 +108,11 @@ if(OMP_NODE_EXECUTABLE)
         add_test(NAME omp_wake_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/omp_wake_tests.mjs" "$<TARGET_FILE:omp_wake_test_driver>")
         set_tests_properties(omp_wake_tests PROPERTIES TIMEOUT 30 LABELS "cli-addon;native-contract")
+        if(UNIX)
+            add_test(NAME omp_helper_ack_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/omp_helper_ack_tests.mjs" "$<TARGET_FILE_DIR:omp_helper>")
+            set_tests_properties(omp_helper_ack_tests PROPERTIES TIMEOUT 15 LABELS "cli-addon;native-contract")
+        endif()
     endif()
 endif()
 add_test(NAME omp_package_validation COMMAND logonomic_cli_addon_validate
