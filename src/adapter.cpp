@@ -5,6 +5,7 @@
 #include "omp_lifecycle.h"
 #include "omp_rpc.h"
 #include "omp_wake.h"
+#include "omp_usage.h"
 
 #include <logonomic_cli_addon/adapter_runtime.h>
 #include <logonomic_cli_addon/profile_storage.h>
@@ -25,6 +26,10 @@ void invoke(addon::Invocation_context& context)
         const auto& capability = context.request().capability.capability_id;
         if (capability == "accounts") {
             omp::handle_accounts(context);
+        }
+        else
+        if (capability == "usage-scan") {
+            omp::handle_usage(context);
         }
         else
         if (capability == "launcher-discovery") {
@@ -89,6 +94,7 @@ int main()
         {"conversation-export", 1},
         {"profile-storage", 1}, {"session-wake", 1},
         {"accounts", 2},
+        {"usage-scan", 3}, {"usage-cross-source-event", 1},
         {"interactive-initial-prompt", 1},
     };
     addon::Adapter_runtime runtime(std::move(options));
