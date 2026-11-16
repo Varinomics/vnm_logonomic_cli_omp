@@ -129,7 +129,15 @@ public:
         request.context.profile_storage = addon::Profile_storage_context{1, addon::path_to_utf8(storage)};
         next();
     }
-    ~Fixture() { std::error_code error; fs::remove_all(root, error); }
+    ~Fixture()
+    {
+        if (std::uncaught_exceptions() != 0) {
+            std::fprintf(stderr, "Retained failing usage fixture: %s\n", addon::path_to_utf8(root).c_str());
+            return;
+        }
+        std::error_code error;
+        fs::remove_all(root, error);
+    }
     void select_account()
     {
         addon::Contract_failure failure;
@@ -169,9 +177,11 @@ public:
         if (request.context.account_context)
             require(!addon::account_context_acknowledgment_failure(*request.context.account_context, *invocation.result),
                 "Every page must preserve the complete selected account record");
-        require(page->cache_candidate && addon::validate_usage_cache_candidate(*page->cache_candidate,
-            request.context.profile_storage->root, request.context.account_context, {}, &failure).has_value(),
-            "The returned candidate must already be fully sealed and valid");
+        require(page->cache_candidate.has_value(), "The usage page must name its sealed candidate");
+        const auto manifest = addon::validate_usage_cache_candidate(*page->cache_candidate,
+            request.context.profile_storage->root, request.context.account_context, {}, &failure);
+        require(manifest.has_value(), "The returned candidate must already be fully sealed and valid: " +
+            failure.reason_code + " " + failure.detail);
         return *page;
     }
 };
@@ -335,16 +345,20 @@ void paging_and_cache_custody(const char* executable)
 
 int main(int, char** argv)
 {
+    const char* group = "native sources and copies";
     try {
         native_sources_and_copies(argv[0]);
+        group = "discard and retention";
         discard_and_retention(argv[0]);
+        group = "dimensions and refusals";
         dimensions_and_rejections(argv[0]);
+        group = "paging and cache custody";
         paging_and_cache_custody(argv[0]);
         std::puts("PASS native event accounting, fork/discard identity, sealed retention and bounded paging");
         return 0;
     }
     catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL: %s\n", error.what());
+        std::fprintf(stderr, "FAIL (%s): %s\n", group, error.what());
         return 1;
     }
 }
