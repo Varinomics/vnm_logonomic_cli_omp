@@ -118,6 +118,9 @@ if(OMP_NODE_EXECUTABLE)
         add_test(NAME omp_catalog_projection_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_model_catalog_tests.mjs")
         set_tests_properties(omp_catalog_projection_tests PROPERTIES TIMEOUT 30 LABELS "cli-addon;native-contract")
+        add_test(NAME omp_review_guard_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_review_tests.mjs")
+        set_tests_properties(omp_review_guard_tests PROPERTIES TIMEOUT 30 LABELS "cli-addon;native-contract")
         add_test(NAME omp_wake_tests COMMAND "${OMP_NODE_EXECUTABLE}" --experimental-strip-types
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/omp_wake_tests.mjs" "$<TARGET_FILE:omp_wake_test_driver>")
         set_tests_properties(omp_wake_tests PROPERTIES TIMEOUT 30 LABELS "cli-addon;native-contract")
