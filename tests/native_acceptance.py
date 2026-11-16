@@ -9,24 +9,34 @@ import argparse
 import base64
 import hashlib
 import http.server
+import fcntl
 import json
 import os
 from pathlib import Path
 import platform
+import pty
 import queue
 import re
 import shlex
 import signal
+import struct
 import subprocess
 import sys
 import threading
 import time
+import termios
 
 
 ANSWER = "Native OMP completed the isolated fixture."
 PROMPT = "Complete the isolated local fixture and report its result."
 HOST_CONTEXT = "Include the isolated Logonomic host context in this native turn."
 MODEL = "logonomic-fixture/model"
+CHILD_MODEL = "logonomic-fixture/child"
+CHILD_PROMPT = "NATIVE_CHILD_TASK: return the isolated child result."
+GRANDCHILD_PROMPT = "NATIVE_GRANDCHILD_TASK: return the isolated grandchild result."
+CHILD_ANSWER = "NATIVE_CHILD_RESULT"
+GRANDCHILD_ANSWER = "NATIVE_GRANDCHILD_RESULT"
+OBSERVATION_SCENARIOS = ("lifecycle", "child", "nested-child", "cwd")
 BASE_ENVIRONMENT = {"PATH", "PATHEXT", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
                     "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
 
@@ -117,6 +127,8 @@ def wrapper_fixture():
         result = {"accepted": True, "instruction_required": True, "instruction": HOST_CONTEXT}
     else:
         result = {"accepted": True, "epoch": 1}
+        if descriptor.get("children"):
+            result["helper_response"] = {"child_state_version": 1}
     print(json.dumps(result), flush=True)
 
 
@@ -144,7 +156,30 @@ class Local_model:
                 tools = [tool["function"]["name"] for tool in body.get("tools", [])]
                 tool_results = [message for message in body["messages"] if message.get("role") == "tool"]
                 tool_call = None
-                if scenario == "delegated" and "Host accepted the fixture result." not in json.dumps(tool_results):
+                child = grandchild = False
+                if scenario in ("child", "nested-child"):
+                    user_text = json.dumps([message.get("content") for message in body["messages"]
+                                            if message.get("role") == "user"])
+                    root = body["model"] == "model" and PROMPT in user_text
+                    grandchild = not root and GRANDCHILD_PROMPT in user_text
+                    child = not root and not grandchild and CHILD_PROMPT in user_text
+                    require(root or child or grandchild, "Native Task lost its exact assignment")
+                    # OMP also asks its small model to label a Task assignment.
+                    # That request has no tools and is not a child agent turn.
+                    should_spawn = bool(tools) and (root or (child and scenario == "nested-child"))
+                    if should_spawn and not tool_results:
+                        require("task" in tools, "The real native Task tool is unavailable")
+                        assignment = GRANDCHILD_PROMPT if child else CHILD_PROMPT
+                        item = {"name": "GrandchildFixture" if child else "ChildFixture", "task": assignment,
+                            "solutionSpace": "One fixed local-fixture reply; no file changes."}
+                        schema = next(tool["function"]["parameters"] for tool in body["tools"]
+                                      if tool["function"]["name"] == "task")
+                        task_arguments = {"context": "Isolated local native-child acceptance.", "tasks": [item]} \
+                            if "tasks" in schema["properties"] else item
+                        if "i" in schema["properties"]:
+                            task_arguments["i"] = "Run the isolated native child"
+                        tool_call = ("task", task_arguments)
+                elif scenario == "delegated" and "Host accepted the fixture result." not in json.dumps(tool_results):
                     require(len(fixture.requests) <= 3, "Native task action did not reach its relay")
                     name = next((name for name in tools if name.endswith("_report_result")), None)
                     if name:
@@ -169,7 +204,8 @@ class Local_model:
                             "arguments": json.dumps(tool_arguments)}}]}
                     finish = "tool_calls"
                 else:
-                    content = "Native work is still pending." if scenario in ("background", "persistent") and len(fixture.requests) == 2 else ANSWER
+                    content = GRANDCHILD_ANSWER if grandchild else CHILD_ANSWER if child else \
+                        "Native work is still pending." if scenario in ("background", "persistent") and len(fixture.requests) == 2 else ANSWER
                     delta, finish = {"role": "assistant", "content": content}, "stop"
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -220,10 +256,21 @@ class Native_case:
             "api": "openai-completions", "models": [{"id": model, "name": "Local fixture",
                 "reasoning": False, "input": ["text"], "cost": {"input": 0, "output": 0,
                 "cacheRead": 0, "cacheWrite": 0}, "contextWindow": 32768, "maxTokens": 1024}
-                for model in (("model", "fallback") if name.startswith("fallback-") else ("model",))]}}})
+                for model in (("model", "fallback") if name.startswith("fallback-") else
+                              ("model", "alternate") if name == "idle-model" else
+                              ("model", "child") if name in ("child", "nested-child") else ("model",))]}}})
+        if name == "idle-model":
+            models = json.loads((agent_directory / "models.yml").read_text())
+            models["providers"]["logonomic-fixture"]["models"][1]["reasoning"] = True
+            write_json(agent_directory / "models.yml", models)
         settings = {"enabledProviders": ["logonomic-fixture"],
             "telemetry": {"otlpExportEnabled": False}, "marketplace": {"autoUpdate": "off"},
             "power": {"sleepPrevention": "off"}}
+        if name in ("child", "nested-child"):
+            settings["modelRoles"] = {"task": CHILD_MODEL, "smol": MODEL}
+        if name == "compaction":
+            settings["modelRoles"] = {"smol": MODEL}
+            settings["compaction"] = {"keepRecentTokens": 1, "methodOrder": ["soft"]}
         if name in ("background", "persistent"):
             settings["async"] = {"enabled": True}
         if name.startswith("fallback-"):
@@ -232,11 +279,33 @@ class Native_case:
                 "fallbackChains": {MODEL: ["logonomic-fixture/fallback"]}}
         write_json(agent_directory / "config.yml", settings)
         self.argv = ["omp", "--no-session", "--model", MODEL]
+        self.expected_cwd = self.root / "workspace"
+        if name == "cwd":
+            self.expected_cwd = self.root / "native-cwd"
+            self.expected_cwd.mkdir()
+            self.argv.extend(["--cwd", str(self.expected_cwd)])
+        if name in ("child", "nested-child", "initial-prompt"):
+            self.add_native_observer()
         self.transcript = []
+
+    def add_native_observer(self):
+        # This diagnostic extension observes public native messages/buses; it
+        # never synthesizes callbacks, dispatches work or changes session state.
+        observer = self.root / "native-observer.ts"
+        journal = json.dumps(str(self.root / "raw-native-events.jsonl"))
+        observer.write_text('import { appendFileSync } from "node:fs";\n' +
+            'export default function(pi) {\n' +
+            ' const save = (event, value) => appendFileSync(' + journal + ', JSON.stringify({event, value}) + "\\n");\n' +
+            ' pi.on("session_start", (_event, ctx) => save("session_start", {agent:ctx.agent, session:ctx.sessionManager.getSessionId()}));\n' +
+            ' pi.on("message_start", (event, ctx) => { if(event.message.role === "user") save("user_message", {agent:ctx.agent, session:ctx.sessionManager.getSessionId(), message:event.message}); });\n' +
+            ' for (const name of ["task:subagent:lifecycle", "task:subagent:progress", "task:subagent:event"]) pi.events.on(name, value => save(name, value));\n' +
+            '}\n', encoding="utf8")
+        self.argv.extend(["--extension", str(observer)])
 
     def helper_environment(self, name="wrapper", stall=False):
         descriptor = self.root / f"{name}-descriptor.json"
-        write_json(descriptor, {"log": str(self.root / f"{name}.jsonl"), "stall": stall})
+        write_json(descriptor, {"log": str(self.root / f"{name}.jsonl"), "stall": stall,
+                               "children": self.name in ("child", "nested-child")})
         wrapper = self.root / "bin" / name
         wrapper.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
             f"{shlex.quote(str(Path(__file__).resolve()))} --wrapper-fixture "
@@ -342,6 +411,269 @@ class Native_case:
         self.transcript.append({"inspection": request["inspection"], "result": response})
         return response, request
 
+    def prepare_interactive(self, initial_prompt=None):
+        request = self.prepare_request(False)
+        interactive = {key: value for key, value in request.items() if key not in ("purpose", "prompt_base64")}
+        interactive["declared_assets"] = ["assets/logonomic.ts", "assets/native_children.ts"]
+        interactive["title_instruction"] = HOST_CONTEXT
+        interactive["launch_environment"]["effective_environment"] = self.frozen_environment("launch-preparation", 3)
+        if initial_prompt is not None:
+            interactive["initial_prompt"] = initial_prompt
+        patch = self.host("launch-preparation", 3, "prepare", interactive, "interactive")
+        require(patch.get("disposition", {}).get("lifecycle_events") is True,
+                "Native interactive launcher did not adopt packaged lifecycle hooks")
+        injected = [argument.replace("{{asset:assets/logonomic.ts}}",
+            str(self.arguments.package / "assets/logonomic.ts")) for argument in patch["argv"]]
+        environment = dict(self.frozen_environment("launch-preparation", 3), **self.helper_environment())
+        environment.update(patch.get("environment", {}).get("set", {}))
+        for name in patch.get("environment", {}).get("unset", []):
+            environment.pop(name, None)
+        return patch, injected, environment
+
+    def delivered_events(self):
+        path = self.root / "wrapper.jsonl"
+        if not path.exists():
+            return []
+        journal = [json.loads(line) for line in path.read_text().splitlines()]
+        return [row["body"]["event"] for row in journal if row["argv"][:2] == ["provider-event", "deliver"]]
+
+    def check_observations(self):
+        events = self.delivered_events()
+        write_json(self.root / "native-observations.json", events)
+        require(events and events[0]["name"] == "session_start" and events[-1]["name"] == "session_shutdown",
+                "Native observation lifetime does not match its root session")
+        require(not any(event["name"] == "logonomic_observation_lost" for event in events),
+                "Native lifecycle observation degraded during the fixture")
+        start = events[0]["body"]
+        ledger = {"current_epoch": 0, "current_transition": None}
+        classifications = []
+        for index, event in enumerate(events):
+            request = {
+                "event": event, "ledger": ledger, "transition_nonce": event["body"]["activation_nonce"],
+                "context_state_version": 2, "execution_context": {"version": 1}, "model_state": {"version": 1}}
+            if self.name in ("child", "nested-child"):
+                request["child_state"] = {"version": 1}
+            classification = self.host("helper-ingress", 2, "classify_event", request, f"native-event-{index}")
+            classifications.append(classification)
+            ledger = {"current_epoch": 1, "current_transition": {"kind": "start",
+                "provider_session_id": start["session_id"], "nonce": start["activation_nonce"]}}
+        write_json(self.root / "native-classifications.json", classifications)
+        observations = [row for result in classifications for row in result.get("observations", [])]
+        require(any(row.get("outcome_transition") == "succeeded" for row in observations),
+                "Actual native completion never became a host lifecycle success")
+        require(not any(result.get("context_failure") or result.get("execution_context", {}).get("failure") or
+                        result.get("model_state", {}).get("failure") for result in classifications),
+                "Actual native optional telemetry was refused by the adapter")
+        context = [row for result in classifications for row in result.get("context_updates", [])]
+        execution = [row for result in classifications for row in result.get("execution_context", {}).get("updates", [])]
+        models = [row for result in classifications for row in result.get("model_state", {}).get("updates", [])]
+        require(any(row.get("used_tokens", -1) >= 0 and row.get("context_window") == 32768 for row in context),
+                "Native current-context measurement never reached the host contract")
+        require(execution and all(row["state"] == "confirmed" and row["cwd"] == str(self.expected_cwd)
+                                  and row["environment"] == "local" for row in execution),
+                "Native working directory was not preserved in host observations")
+        root_models = [row for row in models if not row["agent_id"]]
+        require(root_models and any(row["state"] == "confirmed" and row["provider"] == "logonomic-fixture" and
+                                    row["model"] == "model" for row in root_models),
+                "Actual root model/provider never reached the host contract")
+        starts = [row["agent_id"] for row in observations if row.get("subagent_transition") == "started"]
+        stops = [row["agent_id"] for row in observations if row.get("subagent_transition") == "stopped"]
+        if self.name in ("child", "nested-child"):
+            raw = [json.loads(line) for line in (self.root / "raw-native-events.jsonl").read_text().splitlines()]
+            require(any(row["event"] == "task:subagent:lifecycle" and row["value"].get("status") == "started" for row in raw),
+                    "Native child never started; inspect raw events/tool results for native session-lock or other startup refusal")
+            expected = 2 if self.name == "nested-child" else 1
+            require(len(starts) == expected and len(set(starts)) == expected and sorted(stops) == sorted(starts),
+                    "Actual native descendants did not retain their exact start/stop identities")
+            child_updates = [row for result in classifications for row in result.get("child_state", {}).get("updates", [])]
+            direct = {row["agent_id"] for row in child_updates if not row["parent_agent_id"]}
+            require(len(direct) == 1 and direct.issubset(starts) and
+                    all(any(row["agent_id"] == child and row["state"] == "succeeded" for row in child_updates) for child in starts),
+                    "Actual native child outcomes/parent identities never reached the child-state contract")
+            require(any(row["agent_id"] in direct and row["state"] == "confirmed" and
+                        row["provider"] == "logonomic-fixture" and row["model"] == "child" for row in models),
+                    "Actual serving child model/provider never reached the host contract")
+            child_turns = [request for request in self.model.requests if request["body"].get("tools") and
+                           request["body"]["model"] == "child" and
+                           CHILD_PROMPT in json.dumps([message.get("content") for message in
+                               request["body"]["messages"] if message.get("role") == "user"])]
+            native_messages = json.dumps(self.model.requests)
+            require(child_turns and CHILD_ANSWER in native_messages,
+                    "The native child did not make and return its own real local model turn")
+            if self.name == "nested-child":
+                require(any(row["parent_agent_id"] in direct and row.get("depth") == 2 for row in child_updates),
+                        "Actual nested child did not retain its structural parent/depth")
+                require(GRANDCHILD_PROMPT in native_messages and GRANDCHILD_ANSWER in native_messages,
+                        "The real native grandchild did not execute")
+        return {"observed_events": len(events), "direct_children": len(starts), "model_updates": len(models),
+                "context_updates": len(context), "execution_updates": len(execution)}
+
+    def run_initial_prompt(self):
+        process = None
+        master = slave = None
+        output = []
+        try:
+            brief = self.root / "continuation brief.md"
+            brief.write_text("The isolated host continuation brief.\n", encoding="utf8")
+            text = f"Logonomic continuation: read {brief}; preserve café, 'quotes' and $() literally."
+            self.argv.append("--no-title")
+            patch, command, environment = self.prepare_interactive(
+                {"version": 1, "text": text, "referenced_file": str(brief)})
+            require(patch.get("initial_prompt", {}).get("text_sha256") == hashlib.sha256(text.encode()).hexdigest(),
+                    "Actual adapter did not acknowledge the exact initial prompt bytes")
+            environment["TERM"] = "xterm-256color"
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 120, 0, 0))
+            process = subprocess.Popen(command, cwd=self.root / "workspace", env=environment,
+                stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+            os.close(slave)
+            slave = None
+
+            def read_terminal():
+                try:
+                    while data := os.read(master, 65536):
+                        output.append(data)
+                except OSError:
+                    pass
+
+            reader = threading.Thread(target=read_terminal, daemon=True)
+            reader.start()
+            deadline = time.monotonic() + 45
+            while not any(row["name"] == "agent_end" for row in self.delivered_events()):
+                require(process.poll() is None and time.monotonic() < deadline,
+                        "Native interactive initial prompt did not reach its terminal event")
+                time.sleep(0.02)
+            raw = [json.loads(line) for line in (self.root / "raw-native-events.jsonl").read_text().splitlines()]
+            users = [row["value"]["message"] for row in raw if row["event"] == "user_message" and
+                     row["value"].get("agent", {}).get("kind") == "main"]
+            require(len(users) == 1 and users[0]["content"] == [{"type": "text", "text": text}],
+                    "The native interactive session did not receive exactly the requested first user message")
+            require(len(self.model.requests) == 1 and text in json.dumps(self.model.requests, ensure_ascii=False),
+                    "The exact native startup prompt never reached its actual model turn")
+            # The composer is idle and empty; native Ctrl+D owns orderly exit.
+            os.write(master, b"\x04")
+            exit_code = process.wait(timeout=8)
+            reader.join(timeout=2)
+            require(exit_code == 0, f"Native interactive shutdown exited {exit_code}")
+            observed = self.check_observations()
+            return {"scenario": self.name, "exit_code": exit_code, "model_requests": len(self.model.requests),
+                    "exact_first_user_message": True, **observed}
+        finally:
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            for descriptor in (master, slave):
+                if descriptor is not None:
+                    os.close(descriptor)
+            (self.root / "terminal.bin").write_bytes(b"".join(output))
+            write_json(self.root / "model-requests.json", self.model.requests)
+            self.model.close()
+
+    def run_native_control(self):
+        # Exercise native public RPC selectors/compaction while keeping the
+        # same extension-loaded process alive. This is an observation gate,
+        # separate from the add-on's one-task structured-session inspector.
+        process = None
+        frames = []
+        errors = []
+        try:
+            _patch, command, environment = self.prepare_interactive()
+            command.extend(["--mode", "rpc", "--no-ui"])
+            process = subprocess.Popen(command, cwd=self.root / "workspace", env=environment,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            incoming = queue.Queue()
+
+            def read(stream, name):
+                for line in iter(stream.readline, b""):
+                    incoming.put((name, line))
+                incoming.put((name, None))
+
+            for stream, name in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+                threading.Thread(target=read, args=(stream, name), daemon=True).start()
+            deadline = time.monotonic() + 45
+
+            def until(predicate):
+                while time.monotonic() < deadline:
+                    name, data = incoming.get(timeout=max(0.01, deadline - time.monotonic()))
+                    require(data is not None, "Native process closed before the requested observation")
+                    if name == "stderr":
+                        errors.append(data.decode(errors="replace"))
+                        continue
+                    frame = json.loads(data)
+                    frames.append(frame)
+                    if predicate(frame):
+                        return frame
+                raise RuntimeError("Native control scenario exceeded its deadline")
+
+            def rpc(identifier, command_type, **arguments):
+                command = {"id": identifier, "type": command_type, **arguments}
+                process.stdin.write((json.dumps(command) + "\n").encode())
+                process.stdin.flush()
+                result = until(lambda row: row.get("type") == "response" and row.get("id") == identifier)
+                require(result.get("success") is True, f"Native {command_type} refused: {result}")
+                return result.get("data")
+
+            def prompt(identifier, text):
+                rpc(identifier, "prompt", message=text)
+                result = until(lambda row: row.get("type") == "prompt_result" and row.get("id") == identifier)
+                require(result.get("status") == "completed", "Native observation fixture turn failed")
+                if result.get("sessionSettled") is not True:
+                    until(lambda row: row.get("type") == "session_settled")
+
+            until(lambda row: row.get("type") == "ready")
+            rpc("protocol", "negotiate_protocol", protocolVersion=2)
+            rpc("filter", "set_event_filter", events=None, messageUpdates="delta")
+            prompt("first", PROMPT)
+            if self.name == "idle-model":
+                baseline_requests = len(self.model.requests)
+                rpc("select", "set_model", provider="logonomic-fixture", modelId="alternate")
+                rpc("reasoning", "set_thinking_level", level="low")
+                state = rpc("state", "get_state")
+                require(state["model"]["id"] == "alternate" and state["thinkingLevel"] == "low" and
+                        state["isSettled"] is True, "Native idle model/thinking selection was not actually applied")
+                observed_deadline = time.monotonic() + 5
+                while not any(row["name"] == "model_observation" and
+                        row["body"].get("model", {}).get("model") == "alternate" and
+                        row["body"].get("model", {}).get("reasoning_effort") == "low" for row in self.delivered_events()):
+                    require(time.monotonic() < observed_deadline, "Idle native model change was not reported")
+                    time.sleep(0.02)
+                require(len(self.model.requests) == baseline_requests == 1,
+                        "Observing an idle model change must not start another model request")
+            else:
+                prompt("second", "Second isolated turn for the native compaction fixture.")
+                rpc("compact", "compact", customInstructions="Preserve the two isolated fixture requests.")
+                entries = rpc("entries", "get_entries")["entries"]
+                compactions = [row for row in entries if row.get("type") == "compaction"]
+                require(compactions, "Native compaction did not install a real history entry")
+                observed_deadline = time.monotonic() + 5
+                while not any(row["name"] == "session_compact" and
+                        row["body"].get("context", {}).get("compaction_id") == compactions[-1]["id"]
+                        for row in self.delivered_events()):
+                    require(time.monotonic() < observed_deadline, "Installed native compaction was not reported")
+                    time.sleep(0.02)
+            process.stdin.close()
+            exit_code = process.wait(timeout=8)
+            require(exit_code == 0, f"Native observation process exited {exit_code}")
+            observed = self.check_observations()
+            classified = json.loads((self.root / "native-classifications.json").read_text())
+            if self.name == "idle-model":
+                require(any(row.get("model") == "alternate" and row.get("reasoning_effort") == "low"
+                    for result in classified for row in result.get("model_state", {}).get("updates", [])),
+                    "The actual adapter failed to report the idle native model/thinking selection")
+            else:
+                require(any(row.get("compacted") is True and row.get("event_id") == "compaction:" + compactions[-1]["id"]
+                    for result in classified for row in result.get("context_updates", [])),
+                    "The actual adapter failed to report the installed native compaction")
+            return {"scenario": self.name, "exit_code": exit_code, "model_requests": len(self.model.requests), **observed}
+        finally:
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            write_json(self.root / "native-frames.json", frames)
+            (self.root / "native-stderr.txt").write_text("".join(errors))
+            write_json(self.root / "model-requests.json", self.model.requests)
+            self.model.close()
+
     def run(self, delegated):
         process = None
         try:
@@ -352,17 +684,8 @@ class Native_case:
                     "Actual adapter did not discover the installed native launcher")
             capability = "delegated-session" if delegated else "structured-session"
             request = self.prepare_request(delegated)
-            if self.name == "lifecycle":
-                interactive = {key: value for key, value in request.items() if key not in ("purpose", "prompt_base64")}
-                interactive["declared_assets"] = ["assets/logonomic.ts"]
-                interactive["title_instruction"] = HOST_CONTEXT
-                interactive["launch_environment"]["effective_environment"] = self.frozen_environment("launch-preparation", 3)
-                patch = self.host("launch-preparation", 3, "prepare", interactive, "interactive")
-                require(patch.get("disposition", {}).get("lifecycle_events") is True,
-                        "Native interactive launcher did not adopt packaged lifecycle hooks")
-                injected = [argument.replace("{{asset:assets/logonomic.ts}}",
-                    str(self.arguments.package / "assets/logonomic.ts")) for argument in patch["argv"]]
-                self.argv = injected
+            if self.name in OBSERVATION_SCENARIOS:
+                _patch, self.argv, _environment = self.prepare_interactive()
                 request = self.prepare_request(False)
             prepared = self.host(capability, 3, "prepare", request, "prepare")
             write_json(self.root / "prepared.json", prepared)
@@ -375,7 +698,7 @@ class Native_case:
             proposal = prepared["process"]
             environment = {name: self.environment[name] for name in proposal["environment_names"]}
             environment.update(proposal["environment"])
-            if self.name == "lifecycle":
+            if self.name in OBSERVATION_SCENARIOS:
                 environment.update(self.helper_environment())
             command = [str(self.arguments.package / proposal["executable"]), *proposal["argv"]]
             process = subprocess.Popen(command, cwd=self.root / "workspace", env=environment,
@@ -473,26 +796,9 @@ class Native_case:
                         "Omitted task model selection replaced the user's native fallback policy")
                 require(any(frame.get("type") == "retry_fallback_applied" for frame in native_frames),
                         "The native runtime did not report its fallback transition")
-            elif self.name == "lifecycle":
+            elif self.name in OBSERVATION_SCENARIOS:
                 require(HOST_CONTEXT in json.dumps(self.model.requests), "Host context never reached the actual native model request")
-                journal = [json.loads(line) for line in (self.root / "wrapper.jsonl").read_text().splitlines()]
-                events = [row["body"]["event"] for row in journal if row["argv"][:2] == ["provider-event", "deliver"]]
-                require([event["name"] for event in events] == ["session_start", "agent_start", "agent_end", "session_shutdown"],
-                        f"Native extension lifecycle differs from its supported root contract: {events}")
-                start = events[0]["body"]
-                ledger = {"current_epoch": 0, "current_transition": None}
-                classifications = []
-                for index, event in enumerate(events):
-                    classification = self.host("helper-ingress", 2, "classify_event", {
-                        "event": event, "ledger": ledger, "transition_nonce": event["body"]["activation_nonce"]},
-                        f"native-event-{index}")
-                    classifications.append(classification)
-                    ledger = {"current_epoch": 1, "current_transition": {"kind": "start",
-                        "provider_session_id": start["session_id"], "nonce": start["activation_nonce"]}}
-                write_json(self.root / "native-classifications.json", classifications)
-                require(any(row.get("outcome_transition") == "succeeded"
-                            for result in classifications for row in result.get("observations", [])),
-                        "Actual native completion never became a host lifecycle success")
+                observed = self.check_observations()
             elif self.name == "background":
                 require(any(frame.get("type") == "prompt_result" and frame.get("sessionSettled") is False
                             for frame in native_frames), "Native background work did not keep the prompt unsettled")
@@ -502,7 +808,8 @@ class Native_case:
             else:
                 require(len(self.model.requests) == 1, "Unexpected model calls")
             return {"scenario": self.name, "exit_code": exit_code,
-                    "model_requests": len(self.model.requests), "native_frames": len(native_frames)}
+                    "model_requests": len(self.model.requests), "native_frames": len(native_frames),
+                    **(observed if self.name in OBSERVATION_SCENARIOS else {})}
         finally:
             if process is not None and process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -520,7 +827,8 @@ def main():
     parser.add_argument("--host-simulator", type=Path, required=True, help="SDK host simulator executable")
     parser.add_argument("--artifacts", type=Path, required=True, help="fresh native evidence directory")
     parser.add_argument("--scenario", choices=("structured", "profile", "delegated", "background", "persistent", "lifecycle",
-        "helper-custody", "fallback-selected", "fallback-preserved", "all"), default="all")
+        "child", "nested-child", "cwd", "initial-prompt", "idle-model", "compaction", "helper-custody",
+        "fallback-selected", "fallback-preserved", "all"), default="all")
     arguments = parser.parse_args()
     require(sys.platform == "linux" and platform.machine() == "x86_64",
             "This native acceptance harness requires Linux x86-64")
@@ -529,7 +837,8 @@ def main():
     arguments.artifacts.mkdir(parents=True, exist_ok=False)
     record_metadata(arguments)
     results = []
-    for scenario in ("structured", "profile", "delegated", "background", "persistent", "lifecycle", "helper-custody",
+    for scenario in ("structured", "profile", "delegated", "background", "persistent", "lifecycle", "cwd",
+                     "initial-prompt", "idle-model", "compaction", "child", "nested-child", "helper-custody",
                      "fallback-selected", "fallback-preserved"):
         if arguments.scenario in (scenario, "all"):
             case = Native_case(arguments, scenario)
@@ -539,6 +848,10 @@ def main():
                     result = {"scenario": scenario, "eof_cancellation": "passed", "deadline_cancellation": "passed"}
                 finally:
                     case.model.close()
+            elif scenario == "initial-prompt":
+                result = case.run_initial_prompt()
+            elif scenario in ("idle-model", "compaction"):
+                result = case.run_native_control()
             else:
                 result = case.run(scenario == "delegated" or scenario.startswith("fallback-"))
             results.append(result)

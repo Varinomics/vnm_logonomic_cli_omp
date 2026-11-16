@@ -74,7 +74,12 @@ checked through the actual adapter handler.
 | `delegated` | The generated native plugin starts the exact host relay and descriptor/server pair. A real MCP initialization and `tools/list` precede a real `tools/call`. Default native `tools.xdev` remains enabled; the local model discovers and writes the mounted `xd://` route. |
 | `background` | A real asynchronous native Bash job outlives the initial assistant response. The initial prompt is unsettled; the completion wakes another native turn and emits `session_settled`. The final answer differs from the earlier pending-work text. |
 | `persistent` | A real 30-second asynchronous Bash job remains active at the initial prompt result. A deliberately short host deadline cancels the session. Inspection must report `omp_timed_out`, and native disposal must exit successfully. |
-| `lifecycle` | Actual launch preparation injects the packaged extension. Actual extension loading and the packaged helper deliver `session_start`, `agent_start`, `agent_end` and `session_shutdown` in order, including immediate RPC shutdown. Hidden host context reaches the real model request, and captured events are classified through the adapter's helper-ingress handler. |
+| `lifecycle` | Actual launch preparation injects the packaged extension. Native root start/turn/end/shutdown and optional samples pass through the packaged helper and actual classifier. The gate requires root model/provider, occupancy and cwd envelopes as well as hidden host-context delivery and immediate RPC shutdown. |
+| `cwd` | The native `--cwd` argument selects a different directory from the host process working directory. Execution-context observations must report the actual native directory. |
+| `initial-prompt` | The actual prepared invocation runs on a PTY, with the ordinary interactive mode. A separate passive public-event observer captures the first native user message; its exact text must equal the host request. One model turn follows, and native Ctrl+D owns shutdown. |
+| `idle-model` | The same extension-loaded native process changes model and thinking through actual public RPC commands while idle. Native state and host-classified model observations must agree, with no additional model request. |
+| `compaction` | Two real local turns precede a native compact command, using the documented soft method and a small retained-tail setting. A real installed compaction entry must match the public event and the classifier's context compaction ID. |
+| `child`, `nested-child` | The local model calls the actual Task tool; children use a distinct configured model. Native starts, stops, returned results, direct-child serving model and child-state parent/outcome records are required. The nested case additionally requires a real grandchild and its observed parent/depth. A task-label model call cannot satisfy child execution. |
 | `helper-custody` | The real helper starts a deliberately stalled wrapper. Closing helper stdin and, separately, allowing its own deadline to expire must both reap the wrapper before the helper exits. |
 | `fallback-selected` | The local primary model returns HTTP 429 while native user configuration permits a fallback. An explicit task model selection must prevent every fallback request and return the original native refusal. |
 | `fallback-preserved` | With task model selection omitted, the same native fallback configuration must remain effective: the native transition is observed, a fallback model request occurs, and the task succeeds. |
@@ -93,6 +98,12 @@ SDK host requests and transcripts, the prepared process/artifacts, raw native
 RPC frames, incremental inspection results and model requests. Delegation
 adds the MCP relay journal; lifecycle and helper custody add wrapper journals.
 All prompts, answers and identities in these files belong to the fixture.
+The child and initial-prompt scenarios also attach a passive diagnostic native
+extension that records public events. It never synthesizes callbacks, starts
+work or changes native state. This separates native delivery from the package's
+admission decisions. The initial-prompt gate compares the native user message,
+because the provider transport may combine native date/context notices with
+that message when forming its API request.
 
 ## Qualification boundaries
 
@@ -112,6 +123,17 @@ patch, replace or bypass the lock. The native lock implementation is in
 [linux.rs](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/crates/pi-natives/src/file_lock/linux.rs).
 Normal persistence and resume therefore remain outside this gate's evidence.
 
+The native Task path is also affected: even with an in-memory root, OMP leases
+a temporary artifact directory and opens a persisted child session. In this
+workspace that child lock fails before its `started` event. The public bus
+correctly reports preflight/failed records, which the add-on must not promote
+to a running child. The extra small-model call is native task-label generation,
+not a child turn. `child` and `nested-child` remain strict failing acceptance
+requirements here; they are not skipped or reported as passed. Their full
+success gate must run on a host that permits the official native lock. This
+follows `task/structured-subagent.ts` artifact leasing and `task/executor.ts`
+child-session creation in the recorded upstream revision.
+
 The initial workspace also lacked source-package metadata for its dynamic
 GCC runtime, which the SDK's Linux redistribution step requires. Its local
 validation builds added
@@ -123,6 +145,7 @@ dynamic-runtime provenance path on a supported packaging workstation.
 The asynchronous scenarios establish finite unsuppressed work and host
 cancellation of persistent unsuppressed work. They do not independently
 exercise OMP's suppressed, acknowledged or watched-job delivery exclusions.
-The lifecycle scenario exercises the normal root turn and immediate shutdown;
-the broader event/activation/context matrix is covered by the extension and
-adapter contract fixtures described in the native contract.
+The broader activation, cancellation and degraded-observation matrix also has
+extension and adapter contract fixtures described in the native contract. Each
+scenario's success is recorded separately; the presence of a scenario in this
+file is not evidence that it passed on a particular host.
