@@ -15,7 +15,7 @@ void append_context(
     addon::Classify_event_result& result)
 {
     const auto* native = request.event.body.find("context");
-    if (request.context_state_version != 2 || !native) {
+    if (request.context_state_version != 2 || !native || !json::text(request.event.body, "agent_id").empty()) {
         return;
     }
     const auto session_id = json::text(request.event.body, "session_id");
@@ -52,7 +52,7 @@ void append_execution(
     addon::Classify_event_result& result)
 {
     const auto* native = request.event.body.find("execution");
-    if (request.execution_context_version != 1 || !native) {
+    if (request.execution_context_version != 1 || !native || !json::text(request.event.body, "agent_id").empty()) {
         return;
     }
     if (!json::exact_keys(*native, {"state", "cwd"})) {
@@ -81,6 +81,39 @@ void append_execution(
     addon::decode_execution_updates(payload, result.execution_updates, result.execution_failure);
 }
 
+void append_model(
+    const addon::Classify_event_request& request,
+    addon::Classify_event_result& result)
+{
+    const auto* native = request.event.body.find("model");
+    if (request.model_state_version != 1 || !native) {
+        return;
+    }
+    const auto agent_id = json::text(request.event.body, "agent_id");
+    if ((request.event.name == "task:subagent:progress") == agent_id.empty()) {
+        result.model_failure = addon::Contract_failure{"observation_invalid",
+            "Native model event must retain the root or exact child identity of its source"};
+        return;
+    }
+    if (!json::only_keys(*native, {"state", "provider", "model", "reasoning_effort"})) {
+        result.model_failure = addon::Contract_failure{"observation_invalid",
+            "Native model observation contains unsupported facts"};
+        return;
+    }
+    auto update = *native;
+    update.set("provider_session_id", json::member(request.event.body, "session_id"));
+    update.set("transition_nonce", json::member(request.event.body, "activation_nonce"));
+    update.set("sequence", json::member(request.event.body, "sequence"));
+    update.set("agent_id", addon::Json_value(agent_id));
+    update.set("source", addon::Json_value("omp:" + request.event.name +
+        (request.event.name == "task:subagent:progress" ? ":resolvedModelIdentity" : ":ctx.model")));
+    addon::Json_value updates = addon::Json_value::array();
+    updates.push_back(std::move(update));
+    const auto payload = json::object({{"model_state", json::object({
+        {"version", addon::Json_value(1)}, {"updates", std::move(updates)}})}});
+    addon::decode_model_updates(payload, result.model_updates, result.model_failure);
+}
+
 } // namespace
 
 void append_native_telemetry(
@@ -89,6 +122,7 @@ void append_native_telemetry(
 {
     append_context(request, result);
     append_execution(request, result);
+    append_model(request, result);
 }
 
 } // namespace omp

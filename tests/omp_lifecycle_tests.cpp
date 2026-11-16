@@ -244,6 +244,59 @@ void context_and_execution()
         "Accepted clear and its optional unknown snapshots share the new activation atomically");
 }
 
+void root_and_child_models()
+{
+    auto request = event("agent_start");
+    request.event.body.set("model", json::object({
+        {"state", addon::Json_value("confirmed")}, {"provider", addon::Json_value("native-provider")},
+        {"model", addon::Json_value("native/model:route")}, {"reasoning_effort", addon::Json_value("off")}}));
+    require(checked(request).base.model_updates.empty(), "A host without model-state opt-in receives no model envelope");
+    request.model_state_version = 1;
+    auto result = checked(request);
+    require(result.base.observations.size() == 1 && result.base.model_updates.size() == 1,
+        "Actual root model observation remains independent of root lifecycle");
+    const auto root_model = result.base.model_updates.front();
+    require(root_model.agent_id.empty() && root_model.model == "native/model:route" &&
+        root_model.reasoning_effort == "off", "Native model spelling and explicit off effort are preserved");
+    addon::Model_state state;
+    state.provider_session_id = "session-A";
+    state.transition_nonce = nonce_a;
+    require(addon::apply_model_update(state, root_model) && !addon::apply_model_update(state, root_model),
+        "SDK host model state accepts source order and rejects duplicate delivery");
+    request.event.body.set("sequence", addon::Json_value("2"));
+    request.event.body.set("model", json::object({
+        {"state", addon::Json_value("confirmed")}, {"provider", addon::Json_value("native-fallback")},
+        {"model", addon::Json_value("other-model")}}));
+    const auto changed = checked(request).base.model_updates.front();
+    require(addon::apply_model_update(state, changed) && !state.reasoning_effort && state.provider == "native-fallback",
+        "A new native model replaces the complete previous snapshot, including now-unknown effort");
+    request.event.body.set("activation_nonce", addon::Json_value(nonce_b));
+    require(checked(request).base.model_updates.empty(), "A different root activation cannot update the model");
+    request.event.body.set("activation_nonce", addon::Json_value(nonce_a));
+    request.event.body.set("model", json::object({
+        {"state", addon::Json_value("confirmed")}, {"provider", addon::Json_value(42)},
+        {"model", addon::Json_value("invalid")}}));
+    result = checked(request);
+    require(result.base.model_failure && result.base.model_updates.empty() && result.base.observations.size() == 1,
+        "Malformed model facts cannot invalidate an adjacent accepted lifecycle transition");
+    request.event.body.set("model", json::object({
+        {"state", addon::Json_value("confirmed")}, {"provider", addon::Json_value("child-provider")},
+        {"model", addon::Json_value("child-model")}, {"reasoning_effort", addon::Json_value("high")}}));
+    request.event.name = "task:subagent:progress";
+    require(checked(request).base.model_failure.has_value(), "Child progress without its native identity cannot replace the root");
+    request.event.body.set("agent_id", addon::Json_value("0-Explore"));
+    request.context_state_version = 2;
+    request.event.body.set("context", json::object({{"used_tokens", addon::Json_value(999)}}));
+    result = checked(request);
+    require(result.base.classification == addon::Classification::IGNORED && result.base.observations.empty() &&
+        result.base.context_updates.empty() && result.base.model_updates.front().agent_id == "0-Explore",
+        "An exact child model update creates neither a lifecycle start nor root occupancy");
+    require(!addon::apply_model_update(state, result.base.model_updates.front()),
+        "An admitted child model cannot overwrite the root model state");
+    request.event.name = "agent_start";
+    require(checked(request).base.model_failure.has_value(), "A root model query cannot masquerade as a child source");
+}
+
 } // namespace
 
 int main()
@@ -253,6 +306,7 @@ int main()
         root_turns();
         attention_and_children();
         context_and_execution();
+        root_and_child_models();
         std::puts("PASS omp native lifecycle and SDK feature contracts");
         return 0;
     }

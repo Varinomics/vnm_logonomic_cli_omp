@@ -56,7 +56,7 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
     const auto& name = request.event.name;
     if (!json::only_keys(body, {"session_id", "activation_nonce", "previous_nonce", "event_id", "sequence",
             "turn_id", "source", "session_file", "terminal", "stop_reason", "request_id", "agent_id",
-            "agent_label", "status", "context", "execution"}) ||
+            "agent_label", "status", "context", "execution", "model"}) ||
         !identity(body, "session_id") || !identity(body, "event_id") ||
         !identity(body, "turn_id", true) || !identity(body, "request_id", true) ||
         !identity(body, "agent_id", true) || !sequence(body) ||
@@ -104,7 +104,8 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
             result.base.lifecycle_degradation = addon::Lifecycle_degradation{1, observation.provider_session_id};
             return result;
         }
-        if (name == "message_end" || name == "session_compact") {
+        if (name == "message_end" || name == "session_compact" || name == "task:subagent:progress" ||
+            name == "retry_fallback_applied" || name == "retry_fallback_succeeded") {
             // These optional native samples carry no turn/lifecycle inference.
             append_native_telemetry(request, result.base);
             return result;

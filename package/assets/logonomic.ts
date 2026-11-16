@@ -75,7 +75,8 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     let shutdownDrainExpired = false;
     let running: AbortController | undefined;
     let contextRequest: AbortController | undefined;
-    const children = new Map<string, { owner: Activation; sessionFile: unknown }>();
+    const children = new Map<string, { owner: Activation; sessionFile: unknown;
+        parentToolCallId: unknown; modelSnapshot?: string; pendingModel?: string }>();
     const attention = new Map<string, Activation>();
 
     const isRoot = (ctx: ExtensionContext) => ctx.agent?.kind === "main";
@@ -87,15 +88,16 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         ...(owner.turnId ? { turn_id: owner.turnId } : {}), ...extra,
     });
 
-    const send = (owner: Activation, name: string, extra: Facts = {}, lifecycle = true): Promise<void> => {
-        if (!lifecycle && owner.lost) return Promise.resolve();
+    const send = (owner: Activation, name: string, extra: Facts = {}, lifecycle = true,
+        sourceIsCurrent: () => boolean = () => true): Promise<boolean> => {
+        if (!lifecycle && owner.lost) return Promise.resolve(false);
         const body = facts(owner, extra); // Capture before any asynchronous work.
-        if (queued >= 64 && !lifecycle) return Promise.resolve();
+        if (queued >= 64 && !lifecycle) return Promise.resolve(false);
         if (++queued > 64) owner.lost = true;
         const work = pending.then(async () => {
             --queued;
-            if (owner !== activation || owner.lossReported ||
-                (shutdownDrainExpired && name !== "session_shutdown")) return;
+            if (owner !== activation || owner.lossReported || !sourceIsCurrent() ||
+                (!lifecycle && owner.lost) || (shutdownDrainExpired && name !== "session_shutdown")) return false;
             const controller = new AbortController();
             running = controller;
             try {
@@ -104,12 +106,19 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 if (!reply?.committed || !reply.accepted) {
                     if (lifecycle) owner.lost = true;
                 } else if (owner.lost) owner.lossReported = true;
-            } catch { if (lifecycle) owner.lost = true; }
+                return reply?.committed === true && reply.accepted === true;
+            } catch { if (lifecycle) owner.lost = true; return false; }
             finally { if (running === controller) running = undefined; }
         });
-        pending = work.catch(() => {});
-        return pending;
+        pending = work.then(() => {}, () => {});
+        return work;
     };
+
+    const modelFacts = (provider: unknown, model: unknown, effort: unknown): Facts =>
+        identity(provider, 512) && identity(model, 512) ? {
+            state: "confirmed", provider, model,
+            ...(identity(effort, 128) ? { reasoning_effort: effort } : {}),
+        } : { state: "unknown", provider: "", model: "" };
 
     const snapshot = (ctx: ExtensionContext): Facts => {
         let context: Facts = { usage_unavailable: true };
@@ -122,8 +131,14 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 context = { used_tokens: usage.tokens, context_window: usage.contextWindow };
             }
         } catch { /* An unavailable optional query never blocks native work. */ }
+        let model: Facts = modelFacts(undefined, undefined, undefined);
+        try {
+            let effort: unknown;
+            try { effort = pi.getThinkingLevel?.(); } catch { /* Unknown reasoning does not erase a known model. */ }
+            model = modelFacts(ctx.model?.provider, ctx.model?.id, effort);
+        } catch { /* Native query loss explicitly withdraws this optional fact. */ }
         const cwd = ctx.cwd;
-        return { context, execution: identity(cwd, 4096) && isAbsolute(cwd) ?
+        return { context, model, execution: identity(cwd, 4096) && isAbsolute(cwd) ?
             { state: "confirmed", cwd } : { state: "unknown", cwd: "" } };
     };
 
@@ -221,6 +236,12 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
             event.compactionEntry.id : "";
         void send(owner, "session_compact", extra, false);
     });
+    for (const name of ["retry_fallback_applied", "retry_fallback_succeeded"] as const) {
+        pi.on(name, (_event, ctx) => {
+            const owner = current(ctx);
+            if (owner) void send(owner, name, snapshot(ctx), false);
+        });
+    }
 
     const requestAttention = (name: string, id: string, ctx: ExtensionContext) => {
         const owner = current(ctx);
@@ -260,27 +281,56 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     // Public session EventBus reports immediate task/eval children. It does
     // not expose the private whole-tree bus; /tan and nested coverage are not
     // inferred from a parent tool completing or an assistant mentioning them.
-    const unsubscribe = pi.events.on("task:subagent:lifecycle", (value: unknown) => {
+    const unsubscribeLifecycle = pi.events.on("task:subagent:lifecycle", (value: unknown) => {
         if (typeof value !== "object" || value === null) return;
-        const event = value as { id?: unknown; agent?: unknown; status?: unknown; sessionFile?: unknown };
+        const event = value as { id?: unknown; agent?: unknown; status?: unknown; sessionFile?: unknown;
+            parentToolCallId?: unknown };
         if (!identity(event.id) || typeof event.status !== "string") return;
         if (event.status === "started") {
             if (!activation || shuttingDown) return;
-            children.set(event.id, { owner: activation, sessionFile: event.sessionFile });
+            children.set(event.id, { owner: activation, sessionFile: event.sessionFile,
+                parentToolCallId: event.parentToolCallId });
         }
         const child = children.get(event.id);
-        if (!child || child.sessionFile !== event.sessionFile ||
+        if (!child || child.sessionFile !== event.sessionFile || child.parentToolCallId !== event.parentToolCallId ||
             !["started", "completed", "failed", "aborted"].includes(event.status)) return;
         if (event.status !== "started") children.delete(event.id);
         void send(child.owner, "task:subagent:lifecycle", { agent_id: event.id, status: event.status,
             ...(identity(event.agent, 160) ? { agent_label: event.agent } : {}) });
+    });
+    const unsubscribeProgress = pi.events.on("task:subagent:progress", (value: unknown) => {
+        if (typeof value !== "object" || value === null) return;
+        const event = value as { progress?: { id?: unknown; resolvedModelIdentity?: unknown;
+            resolvedThinkingLevel?: unknown }; sessionFile?: unknown; parentToolCallId?: unknown };
+        const progress = event.progress;
+        if (!progress || !identity(progress.id)) return;
+        const child = children.get(progress.id);
+        if (!child || child.owner !== activation || child.sessionFile !== event.sessionFile ||
+            child.parentToolCallId !== event.parentToolCallId || shuttingDown) return;
+        const nativeModel = progress.resolvedModelIdentity;
+        const separator = typeof nativeModel === "string" ? nativeModel.indexOf("/") : -1;
+        const model = separator > 0 && typeof nativeModel === "string" ?
+            modelFacts(nativeModel.slice(0, separator), nativeModel.slice(separator + 1), progress.resolvedThinkingLevel) :
+            modelFacts(undefined, undefined, undefined);
+        const signature = JSON.stringify(model);
+        if (signature === (child.pendingModel ?? child.modelSnapshot)) return;
+        child.pendingModel = signature;
+        const id = progress.id;
+        // A captured old child's queued sample cannot acquire authority over a
+        // replacement which reused its display id before helper dispatch.
+        void send(child.owner, "task:subagent:progress", { agent_id: id, model }, false,
+            () => children.get(id) === child).then(accepted => {
+                if (accepted) child.modelSnapshot = signature;
+                if (child.pendingModel === signature) child.pendingModel = undefined;
+            });
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
         if (!isRoot(ctx)) return;
         const owner = current(ctx);
         shuttingDown = true;
-        unsubscribe();
+        unsubscribeLifecycle();
+        unsubscribeProgress();
         contextRequest?.abort();
         // Native shutdown awaits handlers for at most 2000 ms. Give already
         // captured facts one helper-sized drain window, then reserve time for

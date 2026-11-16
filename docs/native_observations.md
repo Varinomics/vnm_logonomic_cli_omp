@@ -44,6 +44,37 @@ from an earlier activation, including a clear that preserves the native UUID,
 from replacing the current directory. This capability neither changes directories
 nor authorizes an interactive resume recipe.
 
+## Active model, provider, and reasoning
+
+`model-state@1` samples the root's native `ctx.model.provider` and `ctx.model.id`,
+with `pi.getThinkingLevel()` when available, at the context sampling boundaries
+above and native `retry_fallback_applied` / `retry_fallback_succeeded` events.
+Missing model evidence produces `unknown`; omitted reasoning replaces an older
+known level with unknown, while literal native `off` remains `off`. Requested
+launch aliases and delegated selection arguments are not observations.
+
+Native `model_changed` and `thinking_level_changed` notifications are not exposed
+as extension hooks in this source revision. Idle model or thinking changes are
+therefore reflected by the next public sample rather than an immediate change
+notification. Each SDK update names the native observation boundary.
+
+For direct Task/eval children, the public progress snapshot supplies
+`resolvedModelIdentity` and `resolvedThinkingLevel`. The executor obtains this
+identity from the child session's serving-model attribution, which distinguishes
+an armed fallback from a model that actually served. The extension splits only
+the documented provider/identity boundary; it does not guess thinking from the
+display string or use `modelOverride` as evidence. Unchanged samples are
+deduplicated after accepted delivery, and failed delivery can recover on a later
+native observation.
+
+Child progress must match an admitted native child ID, its exact session file,
+and its parent tool-call identity. Pending delivery also retains the captured
+child object, so a queued old sample cannot overwrite a replacement that reused
+the ID. Clearing or switching the root retires all these bindings. Child model
+facts cannot create child lifecycle, overwrite root context, or complete the
+root's turn. The host independently admits the matching active child and removes
+its live model after departure.
+
 ## Source evidence
 
 The behavior above is traced to upstream oh-my-pi commit
@@ -59,6 +90,12 @@ The behavior above is traced to upstream oh-my-pi commit
   `session_compact` after installation.
 - `packages/coding-agent/src/extensibility/extensions/runner.ts`:
   `cwd` getter and `createContext`, reading `sessionManager.getCwd()`.
+- `packages/coding-agent/src/session/agent-session.ts`:
+  model-change fan-out explicitly has no extension-facing hook.
+- `packages/coding-agent/src/task/executor.ts`: `publishServingModel`,
+  `emitProgressNow`, and native child lifecycle source identity.
+- `packages/tui/src/tools/task.ts`: `AgentProgress.resolvedModelIdentity` and
+  `resolvedThinkingLevel`; `resolvedModel` is a display value, not the identity.
 
 The source revision records evidence; it is not an arbitrary minimum version.
 The contract fixtures test source attribution and SDK admission. Actual native

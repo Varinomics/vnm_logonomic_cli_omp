@@ -10,16 +10,19 @@ function harness(transport) {
     const pi = {
         on(name, handler) { handlers.set(name, handler); },
         events: { on(name, handler) { channels.set(name, handler); return () => channels.delete(name); } },
+        getThinkingLevel: () => state.effort,
     };
     installExtension(pi, async (request, signal) => {
         delivered.push(structuredClone(request));
         return transport ? await transport(request, signal) : { committed: true, accepted: true };
     });
     const state = { id: "session-A", file: "/sessions/A.jsonl", idle: true,
-        cwd: "/work/project/nested dir", usage: { tokens: 1200, contextWindow: 16000, percent: 7.5 } };
+        cwd: "/work/project/nested dir", usage: { tokens: 1200, contextWindow: 16000, percent: 7.5 },
+        model: { provider: "native-provider", id: "native-model" }, effort: "off" };
     const ctx = { agent: { kind: "main", id: "Main", name: "main", depth: 0 }, hasUI: true,
         sessionManager: { getSessionId: () => state.id, getSessionFile: () => state.file },
         get cwd() { return state.cwd; }, getContextUsage: () => state.usage,
+        get model() { return state.model; },
         isIdle: () => state.idle };
     return { handlers, channels, delivered, state, ctx,
         emit: async (name, event = {}, context = ctx) => {
@@ -28,6 +31,7 @@ function harness(transport) {
             return result;
         },
         child: event => channels.get("task:subagent:lifecycle")?.(event),
+        progress: event => channels.get("task:subagent:progress")?.(event),
         drain: () => new Promise(resolve => setImmediate(resolve)) };
 }
 
@@ -200,6 +204,79 @@ await optionalRefusal.emit("agent_start");
 await optionalRefusal.emit("message_end", { message: { role: "assistant" } });
 await optionalRefusal.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "stop" }] });
 assert.equal(optionalRefusal.delivered.at(-1).name, "agent_end", "optional telemetry refusal cannot quarantine root lifecycle");
+
+const models = harness();
+await models.emit("session_start");
+assert.deepEqual(models.delivered.at(-1).body.model,
+    { state: "confirmed", provider: "native-provider", model: "native-model", reasoning_effort: "off" });
+models.state.model = { provider: "native-fallback", id: "model/with:routing" };
+models.state.effort = "high";
+await models.emit("retry_fallback_applied", { from: "requested/base", to: "requested/alias" });
+assert.deepEqual(models.delivered.at(-1).body.model,
+    { state: "confirmed", provider: "native-fallback", model: "model/with:routing", reasoning_effort: "high" },
+    "the actual native model query, not an alias in a routing notice, supplies the observed model");
+models.state.effort = undefined;
+await models.emit("agent_start");
+assert.equal(models.delivered.at(-1).body.model.reasoning_effort, undefined,
+    "absent native thinking information stays unknown rather than retaining an earlier level");
+models.state.model = undefined;
+await models.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "stop" }] });
+assert.deepEqual(models.delivered.at(-1).body.model, { state: "unknown", provider: "", model: "" });
+
+const childA = { id: "0-Explore", agent: "explore", sessionFile: "/sessions/child-A.jsonl", parentToolCallId: "call-A" };
+const childB = { ...childA, sessionFile: "/sessions/child-B.jsonl", parentToolCallId: "call-B" };
+const progressA = { ...childA, progress: { id: childA.id,
+    resolvedModel: "ambiguous/display:high", modelOverride: "requested-alias",
+    resolvedModelIdentity: "actual-provider/model/route:literal", resolvedThinkingLevel: "medium",
+    currentToolArgs: "private arguments", recentOutput: ["private output"] } };
+models.progress(progressA);
+await models.drain();
+assert.equal(models.delivered.at(-1).name, "agent_end", "progress cannot create an unadmitted native child");
+models.child({ ...childA, status: "started" });
+models.progress(progressA);
+await models.drain();
+assert.deepEqual(models.delivered.at(-1).body.model, { state: "confirmed", provider: "actual-provider",
+    model: "model/route:literal", reasoning_effort: "medium" });
+assert.equal(models.delivered.at(-1).body.agent_id, childA.id);
+const beforeDuplicateProgress = models.delivered.length;
+models.progress(progressA);
+await models.drain();
+assert.equal(models.delivered.length, beforeDuplicateProgress, "unchanged native progress does not flood helper delivery");
+models.child({ ...childB, status: "started" });
+models.progress(progressA);
+await models.drain();
+assert.equal(models.delivered.at(-1).name, "task:subagent:lifecycle", "a stale child file/tool-call cannot update a reused child id");
+models.progress({ ...childB, progress: { id: childB.id, resolvedModelIdentity: "new-provider/new-model" } });
+await models.drain();
+assert.equal(models.delivered.at(-1).body.model.provider, "new-provider");
+assert(!JSON.stringify(models.delivered).includes("private arguments") && !JSON.stringify(models.delivered).includes("private output"));
+
+let releaseModelQueue;
+const queuedModels = harness(request => request.name === "agent_start" ?
+    new Promise(resolve => { releaseModelQueue = resolve; }) : { committed: true, accepted: true });
+await queuedModels.emit("session_start");
+queuedModels.child({ ...childA, status: "started" });
+await queuedModels.drain();
+await queuedModels.emit("agent_start");
+queuedModels.progress(progressA);
+queuedModels.child({ ...childB, status: "started" });
+releaseModelQueue({ committed: true, accepted: true });
+await queuedModels.drain();
+assert(!queuedModels.delivered.some(request => request.name === "task:subagent:progress"),
+    "a queued captured model from an old child cannot acquire the replacement's identity at dispatch");
+
+let refuseProgress = true;
+const retryModel = harness(request => request.name === "task:subagent:progress" && refuseProgress ?
+    undefined : { committed: true, accepted: true });
+await retryModel.emit("session_start");
+retryModel.child({ ...childA, status: "started" });
+retryModel.progress(progressA);
+await retryModel.drain();
+refuseProgress = false;
+retryModel.progress(progressA);
+await retryModel.drain();
+assert.equal(retryModel.delivered.filter(request => request.name === "task:subagent:progress").length, 2,
+    "a refused optional model delivery remains recoverable at the next native observation");
 
 let cancelledStall = false;
 const stalled = harness((request, signal) => request.name === "agent_start" ?
