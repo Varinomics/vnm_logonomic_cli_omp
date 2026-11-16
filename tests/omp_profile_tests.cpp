@@ -191,6 +191,56 @@ void session_source_paths(const char* executable)
     require(!f.profile().explicit_session_file, "A native fork selector cannot inherit an unrelated resume path");
 }
 
+void implicit_home_working_directory(const char* executable)
+{
+    Fixture f(executable);
+    f.request.normalization_directory = addon::path_to_utf8(f.home);
+    fs::create_directory(f.home / "tmp");
+    for (const auto* options : {"--session ./work", "--fork ./work"}) {
+        f.request.launcher.script_body = std::string("omp ") + options;
+        require(f.profile().explicit_session_file == f.home / "tmp/work",
+            "Implicit native HOME relocation binds relative history to the first enterable native candidate");
+    }
+    f.request.launcher.script_body = "omp --session ./work.jsonl";
+    require(f.profile().explicit_session_file == f.home / "tmp/work.jsonl", "Native relocation applies equally to .jsonl files");
+#ifndef _WIN32
+    fs::create_directory_symlink(f.home, f.root / "home-alias");
+    f.request.normalization_directory = addon::path_to_utf8(f.root / "home-alias");
+    require(f.profile().explicit_session_file == f.home / "tmp/work.jsonl",
+        "Native complete-path normalization recognizes a symlink alias of HOME");
+    f.request.normalization_directory = addon::path_to_utf8(f.home);
+#endif
+    f.request.launcher.script_body = "omp --session-dir ./history";
+    require(f.profile().explicit_session_directory == f.home / "tmp/history", "Native relocation also applies to session directories");
+    f.request.launcher.script_body = "omp --cwd ./other --cwd \"\" --session ./work";
+    require(f.profile().explicit_session_file == f.home / "tmp/work",
+        "A last empty native cwd value restores implicit startup selection");
+    f.request.launcher.script_body = "omp --allow-home --session ./work";
+    require(f.profile().explicit_session_file == f.home / "work", "Native allow-home fixes relative history at HOME");
+    f.request.launcher.script_body = "omp --cwd . --session ./work";
+    require(f.profile().explicit_session_file == f.home / "work", "An explicit native cwd suppresses automatic relocation");
+    f.request.launcher.script_body = "omp --cwd ./tmp --session ./work";
+    require(f.profile().explicit_session_file == f.home / "tmp/work", "An explicit relative cwd remains usable at HOME");
+    f.request.launcher.script_body = "omp --session \"" + addon::path_to_utf8(f.home / "work") + "\"";
+    require(f.profile().explicit_session_file == f.home / "work", "Absolute exact sources do not depend on automatic relocation");
+    f.request.launcher.script_body = "omp";
+    require(!f.profile().account_key.empty(), "Ordinary source-profile inventory at HOME does not require a guessed cwd");
+    f.set("PI_CODING_AGENT_SESSION_DIR", "relative-history");
+    require(f.profile().explicit_session_directory == f.home / "tmp/relative-history",
+        "Ambient relative session directories use the same native working-directory selection");
+    f.request.launcher.script_body = "omp --allow-home";
+    require(f.profile().explicit_session_directory == f.home / "relative-history",
+        "Native allow-home also fixes ambient relative history directories");
+#ifndef _WIN32
+    fs::remove(f.home / "tmp");
+    std::ofstream(f.home / "tmp") << "A file is not an enterable native candidate";
+    f.request.launcher.script_body = "omp --session ./work";
+    if (fs::is_directory("/tmp"))
+        require(f.profile().explicit_session_file == fs::path("/tmp/work"),
+            "Native POSIX candidate order skips a home/tmp file and reaches existing /tmp");
+#endif
+}
+
 void xdg_and_environment(const char* executable)
 {
     Fixture f(executable);
@@ -298,6 +348,7 @@ int main(int, char** argv)
     try {
         selectors_and_paths(argv[0]);
         session_source_paths(argv[0]);
+        implicit_home_working_directory(argv[0]);
         xdg_and_environment(argv[0]);
         inventory_and_acknowledgments(argv[0]);
         std::puts("PASS native source profiles, SDK accounts and selected-context acknowledgments");

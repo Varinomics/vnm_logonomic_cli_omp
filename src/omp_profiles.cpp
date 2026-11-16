@@ -7,12 +7,20 @@
 #include <logonomic_cli_addon/sha256.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <fstream>
 #include <map>
 #include <regex>
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace omp {
 namespace {
@@ -126,6 +134,58 @@ fs::path canonical_profile(const fs::path& path)
     return canonical;
 }
 
+std::string native_comparable_path(const fs::path& path, bool windows)
+{
+    // Native normalizePathForComparison resolves only a complete existing
+    // path. On failure it retains the lexical absolute spelling, rather than
+    // resolving a missing suffix through its deepest existing ancestor.
+    std::error_code error;
+    const auto canonical = fs::canonical(path, error);
+    auto result = addon::path_to_utf8(error ? path.lexically_normal() : canonical);
+    if (windows) result = addon::lower(std::move(result));
+    return result;
+}
+
+bool enterable_directory(const fs::path& path)
+{
+    std::error_code error;
+    if (!fs::is_directory(fs::status(path, error)) || error) return false;
+#ifdef _WIN32
+    const auto directory = CreateFileW(path.c_str(), FILE_TRAVERSE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (directory == INVALID_HANDLE_VALUE)
+        throw Profile_error("native_profile_working_directory_unsupported");
+    CloseHandle(directory);
+    return true;
+#else
+    // Native chdir uses effective credentials. Do not infer its permission
+    // result from access() when an unusual launcher uses different real IDs.
+    if (getuid() != geteuid() || getgid() != getegid())
+        throw Profile_error("native_profile_working_directory_unsupported");
+    if (access(path.c_str(), X_OK) == 0) return true;
+    if (errno == EACCES || errno == ENOENT || errno == ENOTDIR) return false;
+    throw Profile_error("native_profile_working_directory_unsupported");
+#endif
+}
+
+fs::path automatic_home_directory(const fs::path& home, const std::function<bool()>& cancelled)
+{
+    std::vector<fs::path> candidates{home / "tmp"};
+#ifndef _WIN32
+    candidates.emplace_back("/tmp");
+    candidates.emplace_back("/var/tmp");
+#endif
+    for (const auto& candidate : candidates) {
+        check_cancelled(cancelled);
+        if (enterable_directory(candidate)) return candidate;
+    }
+    // The remaining native os.tmpdir fallback depends on runtime/platform
+    // inputs not all declared by these capabilities. Do not use this adapter's
+    // own environment or bind the source to HOME when that choice is unknown.
+    throw Profile_error("native_profile_working_directory_unsupported");
+}
+
 bool path_exists(const fs::path& path)
 {
     std::error_code error;
@@ -202,6 +262,7 @@ struct Selectors
     std::optional<std::string> session_directory;
     std::optional<std::string> session_file;
     std::optional<std::string> cwd;
+    bool allow_home = false;
 };
 
 bool native_session_path(std::string_view value)
@@ -235,6 +296,7 @@ Selectors selectors(const Launcher_command& launcher)
         if (one_of(option, {"--continue", "-c", "--no-extensions", "--no-session", "--no-tools", "--no-skills",
                 "--no-rules", "--no-context-files", "--no-lsp", "--no-title", "--allow-home", "--offline",
                 "--hide-thinking", "--auto-approve", "--yolo"})) {
+            if (option == "--allow-home") result.allow_home = true;
             continue;
         }
         // The existing supported interactive grammar has already proved that
@@ -320,13 +382,24 @@ Native_profile resolve(const addon::Launcher_request& request, const addon::Laun
             if (path_exists(candidate)) *target = candidate;
         }
     }
-    const auto project = options.cwd ? normalize_path(*options.cwd, *cwd) : *cwd;
+    auto project = options.cwd ? normalize_path(*options.cwd, *cwd) : *cwd;
     check_dotenv({*home, *cwd, project, profile.config, profile.agent}, cancelled);
     profile.source_profile = canonical_profile(profile.agent != default_agent ? profile.agent : profile.config);
     auto key_path = addon::path_to_utf8(profile.source_profile);
     if (windows) key_path = addon::lower(std::move(key_path));
     profile.account_key = "omp-profile:" + addon::to_hex(addon::Sha256::digest(key_path));
     const auto session_directory = options.session_directory ? options.session_directory : env(environment, "PI_CODING_AGENT_SESSION_DIR");
+    const auto relative = [](const std::optional<std::string>& value) {
+        return value && !value->empty() && !addon::path_from_utf8(*value).is_absolute();
+    };
+    if ((!options.cwd || options.cwd->empty()) && !options.allow_home &&
+        (relative(options.session_file) || relative(session_directory))) {
+        const auto native_cwd = native_comparable_path(*cwd, windows);
+        const auto native_home = native_comparable_path(*home, windows);
+        // Match native applyStartupCwd's ordered existing-directory choices
+        // without changing this process's cwd or creating a native directory.
+        if (native_cwd == native_home) project = automatic_home_directory(*home, cancelled);
+    }
     if (session_directory && !session_directory->empty())
         profile.explicit_session_directory = normalize_path(*session_directory, project);
     if (options.session_file) profile.explicit_session_file = normalize_path(*options.session_file, project);

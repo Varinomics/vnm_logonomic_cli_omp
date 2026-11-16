@@ -53,6 +53,15 @@ launcher. It applies these source-established rules:
   and bare `--restore` preserves an already selected source. These are history
   locators; native continuation/fork behavior still prevents an exact-resume
   promise from a path alone.
+- When launch cwd is the native home directory, OMP can automatically change
+  to an accessible temporary directory. For relative history paths, the adapter
+  inspects existing native candidates in order: `HOME/tmp`, then POSIX `/tmp`
+  and `/var/tmp`. It checks directory accessibility without changing its own
+  cwd or creating a directory. `--allow-home` or explicit `--cwd` suppresses
+  that automatic selection. Only an unestablished permission state or the
+  remaining runtime `os.tmpdir()` fallback is unavailable with
+  `native_profile_working_directory_unsupported`. Absolute locators and ordinary
+  source-profile inventory do not depend on this automatic selection.
 
 Native Bun/OMP dotenv loading can also change home, profile, agent, session or
 XDG paths after the host freezes its environment. The adapter does not implement

@@ -22,6 +22,10 @@ session name, ID or prefix remains a selector even if a same-named file exists.
 Relative paths resolve after native startup `--cwd` selection; native fork
 selection takes precedence over resume selection. This supplies historical
 source locators, not an exact-resume or current-session identity guarantee.
+If the launcher starts in native HOME, relative session paths follow native
+automatic working-directory selection, unless `--allow-home` or `--cwd` fixes
+it. Unestablished permission or runtime-fallback choices fail explicitly rather
+than binding the source to a different transcript; see the profile rules below.
 
 Each assistant `message.usage` and auxiliary `model_usage.usage` contributes
 one event, across all saved branches. The authoritative amount is the native
@@ -142,6 +146,12 @@ conflict rejection, corrupt caches, capacity, cancellation and bounded paging.
 Exact-source regressions include extensionless/custom-suffix registry and CLI
 paths, opaque ID/name selectors, startup cwd/fork precedence, malformed exact
 files and refusal to infer child directories from a custom suffix.
+`tests/native_usage_locator_acceptance.py` replays the unchanged native-authored
+100-token source through the packaged adapter under those filename authorities.
+It also invokes the installed public `applyStartupCwd` helper to compare HOME
+relocation, relative session directories, `--allow-home`, explicit and empty
+`--cwd`, and absolute-path controls. These checks make no model request and do
+not depend on native persistent file locks.
 `tests/native_usage_acceptance.py` additionally asks the official OMP
 `SessionManager.inMemory` API to create a real branch copy, discard rewrite and
 auxiliary usage entry, then serializes those exact returned entries through the
