@@ -2,11 +2,12 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { nestedTaskSnapshots } from "./native_children.ts";
 
-type Fact = string | boolean | number | { [key: string]: Fact };
+type Fact = string | boolean | number | Fact[] | { [key: string]: Fact };
 type Facts = Record<string, Fact>;
 type Request = { operation: "event" | "context"; name: string; body: Facts };
-type Reply = { committed: boolean; accepted: boolean; instruction?: string };
+type Reply = { committed: boolean; accepted: boolean; instruction?: string; child_state_version?: number };
 type Transport = (request: Request, signal: AbortSignal) => Promise<Reply | undefined>;
 type Activation = {
     sessionId: string;
@@ -18,7 +19,13 @@ type Activation = {
     pendingContext: string;
     modelSnapshot?: string;
     pendingRootModel?: string;
+    childState: boolean;
+    childLoss?: string;
+    childLossReported: boolean;
 };
+type Child = { owner: Activation; sessionFile: unknown; parentToolCallId: unknown; active: boolean;
+    modelSnapshot?: string; pendingModel?: string };
+type NestedChild = { anchor: Child; parentId: string; depth: number; state: string; signature: string };
 
 const freshId = () => randomBytes(16).toString("hex");
 const identity = (value: unknown, limit = 256): value is string =>
@@ -79,10 +86,11 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     let shuttingDown = false;
     let shutdownDrainExpired = false;
     let running: AbortController | undefined;
+    let runningLifecycle = false;
     let contextRequest: AbortController | undefined;
     let stopModelObserver: (() => void) | undefined;
-    const children = new Map<string, { owner: Activation; sessionFile: unknown;
-        parentToolCallId: unknown; modelSnapshot?: string; pendingModel?: string }>();
+    const children = new Map<string, Child>();
+    const nestedChildren = new Map<string, NestedChild>();
     const attention = new Map<string, Activation>();
 
     const isRoot = (ctx: ExtensionContext) => ctx.agent?.kind === "main";
@@ -91,6 +99,8 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     const facts = (owner: Activation, extra: Facts = {}): Facts => ({
         session_id: owner.sessionId, activation_nonce: owner.nonce,
         event_id: freshId(), sequence: String(++owner.sequence),
+        ...(owner.childLoss && !owner.childLossReported ? { child_loss: { reason_code: owner.childLoss,
+            source: "omp:native_child_observer" } } : {}),
         ...(owner.turnId ? { turn_id: owner.turnId } : {}), ...extra,
     });
 
@@ -101,10 +111,12 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // Replaceable samples have their own bounded budget. Dropping or
         // coalescing them cannot consume root lifecycle custody or claim loss.
         // A successful compaction is a distinct event, never coalesced.
-        const sampleKey = !lifecycle && name !== "session_compact" ? `${name}:${extra.agent_id ?? ""}` : "";
+        const replaceable = ["message_end", "model_observation", "retry_fallback_applied",
+            "retry_fallback_succeeded", "task:subagent:progress"].includes(name);
+        const sampleKey = !lifecycle && replaceable ? `${name}:${extra.agent_id ?? ""}` : "";
         const revision = ++sampleRevision;
         if (sampleKey) latestSamples.set(sampleKey, revision);
-        if (!lifecycle && queuedOptional >= 16) return Promise.resolve(false);
+        if (!lifecycle && queuedOptional >= 16 && name !== "task:subagent:loss") return Promise.resolve(false);
         if (lifecycle) {
             if (++queuedLifecycle > 64) owner.lost = true;
         } else ++queuedOptional;
@@ -116,6 +128,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 (!lifecycle && owner.lost) || (shutdownDrainExpired && name !== "session_shutdown")) return false;
             const controller = new AbortController();
             running = controller;
+            runningLifecycle = lifecycle;
             const sentLoss = owner.lost;
             try {
                 const reply = await transport({ operation: "event",
@@ -123,10 +136,14 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
                 if (!reply?.committed || !reply.accepted) {
                     if (lifecycle) owner.lost = true;
                 } else if (sentLoss) owner.lossReported = true;
-                else if (extra.model && !extra.agent_id) owner.modelSnapshot = JSON.stringify(extra.model);
+                else {
+                    if (extra.model && !extra.agent_id) owner.modelSnapshot = JSON.stringify(extra.model);
+                    if (reply.child_state_version === 1) owner.childState = true;
+                    if (body.child_loss) owner.childLossReported = true;
+                }
                 return reply?.committed === true && reply.accepted === true;
             } catch { if (lifecycle) owner.lost = true; return false; }
-            finally { if (running === controller) running = undefined; }
+            finally { if (running === controller) { running = undefined; runningLifecycle = false; } }
         });
         pending = work.then(() => {}, () => {});
         return work;
@@ -137,6 +154,79 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
             state: "confirmed", provider, model,
             ...(identity(effort, 128) ? { reasoning_effort: effort } : {}),
         } : { state: "unknown", provider: "", model: "" };
+
+    const childModelFacts = (nativeModel: unknown, effort: unknown): Facts => {
+        const separator = typeof nativeModel === "string" ? nativeModel.indexOf("/") : -1;
+        return separator > 0 && typeof nativeModel === "string" ?
+            modelFacts(nativeModel.slice(0, separator), nativeModel.slice(separator + 1), effort) :
+            modelFacts(undefined, undefined, undefined);
+    };
+
+    const childFacts = (state: string, parent: string, depth: number, description?: unknown,
+        tool?: unknown, percent?: unknown): Facts => ({
+        state, parent_agent_id: parent, depth,
+        ...(identity(description, 512) ? { description } : {}),
+        ...(identity(tool, 128) ? { current_tool: tool } : {}),
+        ...(typeof percent === "number" && Number.isFinite(percent) && percent >= 0 && percent <= 100 ?
+            { progress: percent / 100 } : {}),
+    });
+
+    const childState = (status: unknown): string => status === "started" || status === "running" ? "running" :
+        status === "completed" ? "succeeded" : status === "failed" ? "failed" : status === "aborted" ? "interrupted" : "unknown";
+
+    const loseChildren = (owner: Activation, reason: string): void => {
+        if (owner !== activation || !owner.childState || owner.childLoss) return;
+        owner.childLoss = reason;
+        children.clear();
+        nestedChildren.clear();
+        // This capability-owned loss can also ride the next root event if
+        // transport fails. It never becomes whole-root observation loss.
+        if (!shuttingDown) void send(owner, "task:subagent:loss", {}, false);
+    };
+
+    const observeNested = (id: string, anchor: Child, progress: unknown): void => {
+        const owner = anchor.owner;
+        if (!owner.childState || owner.childLoss) return;
+        const observed = nestedTaskSnapshots(id, progress);
+        if (observed.loss) { loseChildren(owner, observed.loss); return; }
+        const rows: Facts[] = [];
+        for (const item of observed.snapshots) {
+            const previous = nestedChildren.get(item.id);
+            if (children.has(item.id) || (previous && (previous.anchor !== anchor ||
+                previous.parentId !== item.parentId || previous.depth !== item.depth))) {
+                loseChildren(owner, "conflicting_nested_identity"); return;
+            }
+            const state = item.state;
+            // Settled snapshots remain in native tool details; replay cannot
+            // reopen their old child or roll it back to an earlier phase.
+            if (previous && previous.state !== "running") continue;
+            const extra: Facts = { agent_id: item.id,
+                ...(identity(item.agent, 160) ? { agent_label: item.agent } : {}),
+                child: childFacts(state, item.parentId, item.depth, item.description,
+                    item.currentTool, item.completionPercent),
+                model: childModelFacts(item.modelIdentity, item.thinkingLevel) };
+            const signature = JSON.stringify(extra);
+            if (previous?.signature === signature) continue;
+            if (!previous && children.size + nestedChildren.size >= 128) {
+                loseChildren(owner, "child_observation_limit"); return;
+            }
+            const transition = previous ? (state === "running" ? "none" : "stop") :
+                (state === "running" ? "start" : "start_stop");
+            nestedChildren.set(item.id, { anchor, parentId: item.parentId, depth: item.depth, state, signature });
+            const startSequence = transition === "start_stop" ? String(++owner.sequence) : undefined;
+            rows.push({ ...extra, transition, execution_observed: true,
+                ...(startSequence ? { start_sequence: startSequence } : {}), sequence: String(++owner.sequence) });
+        }
+        // At most eight rows / sixteen start-stop facts fit the ordinary
+        // helper-ingress@2 contract. No new helper version is required.
+        for (let start = 0; start < rows.length; start += 8) {
+            void send(owner, "task:subagent:snapshot", { children: rows.slice(start, start + 8) }, false,
+                () => !owner.childLoss && children.get(id) === anchor).then(accepted => {
+                    if (!accepted && owner === activation && children.get(id) === anchor)
+                        loseChildren(owner, "child_delivery_lost");
+                });
+        }
+    };
 
     const rootModelFacts = (ctx: ExtensionContext): Facts => {
         try {
@@ -188,10 +278,11 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         stopModelObserver?.();
         stopModelObserver = undefined;
         const owner: Activation = { sessionId, nonce: freshId(), turnId: "", sequence: 0,
-            lost: false, lossReported: false, pendingContext: "" };
+            lost: false, lossReported: false, pendingContext: "", childState: false, childLossReported: false };
         activation = owner;
         latestSamples.clear();
         children.clear();
+        nestedChildren.clear();
         attention.clear();
         const sessionFile = ctx.sessionManager.getSessionFile();
         await send(owner, name, { ...snapshot(ctx), source, ...(previous ? { previous_nonce: previous } : {}),
@@ -320,48 +411,66 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         if (event.toolName === "ask") return resolveAttention("ask_execution_end", `ask:${event.toolCallId}`, ctx);
     });
 
-    // Public session EventBus reports immediate task/eval children. It does
-    // not expose the private whole-tree bus; /tan and nested coverage are not
-    // inferred from a parent tool completing or an assistant mentioning them.
+    // Public lifecycle reports direct Task/eval children. Nested Task snapshots
+    // are separately projected only after positive native execution evidence;
+    // a parent stopping or textual mention never implies descendant completion.
     const unsubscribeLifecycle = pi.events.on("task:subagent:lifecycle", (value: unknown) => {
         if (typeof value !== "object" || value === null) return;
         const event = value as { id?: unknown; agent?: unknown; status?: unknown; sessionFile?: unknown;
-            parentToolCallId?: unknown };
+            parentToolCallId?: unknown; description?: unknown };
         if (!identity(event.id) || typeof event.status !== "string") return;
         if (event.status === "started") {
-            if (!activation || shuttingDown) return;
+            if (!activation || activation.childLoss || shuttingDown) return;
+            const previous = children.get(event.id);
+            if (activation.childState && previous &&
+                (previous.sessionFile !== event.sessionFile || previous.parentToolCallId !== event.parentToolCallId) &&
+                [...nestedChildren.values()].some(nested => nested.anchor === previous)) {
+                loseChildren(activation, "replaced_child_binding"); return;
+            }
+            if (activation.childState && !children.has(event.id) && children.size + nestedChildren.size >= 128) {
+                loseChildren(activation, "child_observation_limit"); return;
+            }
             children.set(event.id, { owner: activation, sessionFile: event.sessionFile,
-                parentToolCallId: event.parentToolCallId });
+                parentToolCallId: event.parentToolCallId, active: true });
         }
         const child = children.get(event.id);
         if (!child || child.sessionFile !== event.sessionFile || child.parentToolCallId !== event.parentToolCallId ||
             !["started", "completed", "failed", "aborted"].includes(event.status)) return;
-        if (event.status !== "started") children.delete(event.id);
+        if (event.status !== "started") {
+            child.active = false;
+            if (!child.owner.childState) children.delete(event.id);
+        }
         void send(child.owner, "task:subagent:lifecycle", { agent_id: event.id, status: event.status,
-            ...(identity(event.agent, 160) ? { agent_label: event.agent } : {}) });
+            ...(identity(event.agent, 160) ? { agent_label: event.agent } : {}),
+            ...(child.owner.childState ? { child: childFacts(childState(event.status), "", 1, event.description) } : {}) },
+            !child.owner.childState).then(accepted => {
+                if (!accepted && children.get(event.id as string) === child) loseChildren(child.owner, "child_delivery_lost");
+            });
     });
     const unsubscribeProgress = pi.events.on("task:subagent:progress", (value: unknown) => {
         if (typeof value !== "object" || value === null) return;
         const event = value as { progress?: { id?: unknown; resolvedModelIdentity?: unknown;
-            resolvedThinkingLevel?: unknown }; sessionFile?: unknown; parentToolCallId?: unknown };
+            resolvedThinkingLevel?: unknown; status?: unknown; description?: unknown;
+            currentTool?: unknown; completionPercent?: unknown }; sessionFile?: unknown; parentToolCallId?: unknown };
         const progress = event.progress;
         if (!progress || !identity(progress.id)) return;
         const child = children.get(progress.id);
-        if (!child || child.owner !== activation || child.sessionFile !== event.sessionFile ||
+        if (!child || !child.active || child.owner !== activation || child.sessionFile !== event.sessionFile ||
             child.parentToolCallId !== event.parentToolCallId || shuttingDown) return;
-        const nativeModel = progress.resolvedModelIdentity;
-        const separator = typeof nativeModel === "string" ? nativeModel.indexOf("/") : -1;
-        const model = separator > 0 && typeof nativeModel === "string" ?
-            modelFacts(nativeModel.slice(0, separator), nativeModel.slice(separator + 1), progress.resolvedThinkingLevel) :
-            modelFacts(undefined, undefined, undefined);
-        const signature = JSON.stringify(model);
+        observeNested(progress.id, child, progress);
+        if (child.owner.childLoss) return;
+        const extra: Facts = { agent_id: progress.id,
+            model: childModelFacts(progress.resolvedModelIdentity, progress.resolvedThinkingLevel),
+            ...(child.owner.childState ? { child: childFacts(childState(progress.status), "", 1,
+                progress.description, progress.currentTool, progress.completionPercent) } : {}) };
+        const signature = JSON.stringify(extra);
         if (signature === (child.pendingModel ?? child.modelSnapshot)) return;
         child.pendingModel = signature;
         const id = progress.id;
         // A captured old child's queued sample cannot acquire authority over a
         // replacement which reused its display id before helper dispatch.
-        void send(child.owner, "task:subagent:progress", { agent_id: id, model }, false,
-            () => children.get(id) === child).then(accepted => {
+        void send(child.owner, "task:subagent:progress", extra, false,
+            () => children.get(id) === child && child.active).then(accepted => {
                 if (accepted) child.modelSnapshot = signature;
                 if (child.pendingModel === signature) child.pendingModel = undefined;
             });
@@ -382,7 +491,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         // This bounds teardown; it never supplies terminal-event evidence.
         const deadline = setTimeout(() => {
             shutdownDrainExpired = true;
-            if (owner) owner.lost = true;
+            if (owner && (runningLifecycle || queuedLifecycle > 0)) owner.lost = true;
             running?.abort();
         }, 750);
         try {
@@ -396,6 +505,7 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         activation = undefined;
         latestSamples.clear();
         children.clear();
+        nestedChildren.clear();
         attention.clear();
     });
 }

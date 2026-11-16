@@ -132,9 +132,16 @@ int run()
         // An unknown transport outcome retains its exact journal identity.
         outcome = client.deliver_provider_event(name, body, key, nonce);
     }
-    const bool written = write_result(json::object({
+    auto result = json::object({
         {"committed", addon::Json_value(outcome.committed)},
-        {"accepted", addon::Json_value(outcome.committed && outcome.accepted)}}));
+        {"accepted", addon::Json_value(outcome.committed && outcome.accepted)}});
+    if (outcome.committed && outcome.accepted && outcome.helper_response) {
+        const auto& version = json::member(*outcome.helper_response, "child_state_version");
+        if (version.is_integer() && version.as_integer() == 1) {
+            result.set("child_state_version", addon::Json_value(1));
+        }
+    }
+    const bool written = write_result(result);
     if (written && outcome.committed) {
         (void)client.acknowledge_provider_event(key);
     }

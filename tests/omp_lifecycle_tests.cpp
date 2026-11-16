@@ -302,6 +302,106 @@ void root_and_child_models()
     require(checked(request).base.model_failure.has_value(), "A root model query cannot masquerade as a child source");
 }
 
+addon::Json_value child_detail(const char* state, const char* parent = "", int depth = 1)
+{
+    return json::object({{"state", addon::Json_value(state)}, {"parent_agent_id", addon::Json_value(parent)},
+        {"depth", addon::Json_value(depth)}, {"description", addon::Json_value("Native child assignment")},
+        {"current_tool", addon::Json_value("read")}, {"progress", addon::Json_value(0.25)}});
+}
+
+void child_details_and_nested()
+{
+    auto request = event("task:subagent:lifecycle");
+    request.event.body.set("agent_id", addon::Json_value("native-child"));
+    request.event.body.set("status", addon::Json_value("started"));
+    request.event.body.set("child", child_detail("running"));
+    require(checked(request).base.child_updates.empty(), "Child detail output is independently negotiated");
+    request.child_state_version = 1;
+    auto result = checked(request);
+    require(result.base.observations.size() == 1 && result.base.child_updates.size() == 1,
+        "Direct native start can atomically carry separately scoped child details");
+    require(result.base.child_updates.front().agent_id == "native-child" &&
+        result.base.child_updates.front().parent_agent_id.empty() && result.base.child_updates.front().depth == 1,
+        "A direct child's parent is explicitly the root without overloading its definition label");
+    auto invalid_detail = child_detail("running");
+    invalid_detail.set("progress", addon::Json_value(1.5));
+    request.event.body.set("child", std::move(invalid_detail));
+    result = checked(request);
+    require(result.base.child_failure && result.base.child_updates.empty() && result.base.observations.size() == 1,
+        "Invalid child presentation detail cannot discard its valid native lifecycle fact");
+
+    auto loss = event("task:subagent:loss");
+    loss.child_state_version = 1;
+    loss.event.body.set("child_loss", json::object({{"reason_code", addon::Json_value("nested_snapshot_limit")},
+        {"source", addon::Json_value("omp:native_child_observer")}}));
+    result = checked(loss);
+    require(result.base.classification == addon::Classification::IGNORED && result.base.observations.empty() &&
+        result.base.child_loss && !result.base.lifecycle_degradation,
+        "Attributed child-only loss requires no invented root lifecycle fact or helper version change");
+    loss.event.name = "agent_end";
+    loss.event.body.set("terminal", addon::Json_value(true));
+    loss.event.body.set("stop_reason", addon::Json_value("stop"));
+    result = checked(loss);
+    require(result.base.child_loss && result.base.observations.front().outcome_transition == addon::Outcome_transition::SUCCEEDED,
+        "Child observation loss remains independent of an affirmative real root completion");
+    loss.event.body.set("activation_nonce", addon::Json_value(nonce_b));
+    require(!checked(loss).base.child_loss, "Late child loss cannot clear another root activation's children");
+
+    auto nested = event("task:subagent:snapshot");
+    nested.child_state_version = 1;
+    nested.model_state_version = 1;
+    const auto row = json::object({
+        {"agent_id", addon::Json_value("native-grandchild")}, {"agent_label", addon::Json_value("worker")},
+        {"child", child_detail("interrupted", "native-child", 2)},
+        {"model", json::object({{"state", addon::Json_value("confirmed")}, {"provider", addon::Json_value("child-provider")},
+            {"model", addon::Json_value("child-model")}})},
+        {"transition", addon::Json_value("start_stop")}, {"execution_observed", addon::Json_value(true)},
+        {"start_sequence", addon::Json_value("10")}, {"sequence", addon::Json_value("11")}});
+    addon::Json_value rows = addon::Json_value::array();
+    rows.push_back(row);
+    nested.event.body.set("children", rows);
+    result = checked(nested);
+    require(result.base.observations.size() == 2 && result.base.child_updates.size() == 1 &&
+        result.base.model_updates.size() == 1, "A first observed settled native execution admits start/stop and attributed details together");
+    require(result.base.observations[0].subagent_transition == addon::Subagent_transition::STARTED &&
+        result.base.observations[1].subagent_transition == addon::Subagent_transition::STOPPED &&
+        result.base.observations[0].provider_event_id != result.base.observations[1].provider_event_id &&
+        result.base.observations[0].provider_sequence == "10" && result.base.observations[1].provider_sequence == "11",
+        "Nested start and stop retain separate captured identities and source order");
+    for (const auto& observation : result.base.observations) {
+        require(observation.provider_turn_id.empty() && observation.outcome_transition == addon::Outcome_transition::NONE,
+            "A descendant result never becomes the root turn result");
+    }
+    nested.child_state_version = 0;
+    require(checked(nested).base.observations.empty(), "An older host without child-only loss authority admits no expanded nested stream");
+    nested.child_state_version = 1;
+    auto unproven = row;
+    unproven.set("execution_observed", addon::Json_value(false));
+    addon::Json_value unproven_rows = addon::Json_value::array();
+    unproven_rows.push_back(std::move(unproven));
+    nested.event.body.set("children", std::move(unproven_rows));
+    require(checked(nested).base.observations.empty() && checked(nested).base.child_failure,
+        "A reserved/preflight row cannot create native child lifecycle");
+    addon::Json_value too_many = addon::Json_value::array();
+    for (int index = 0; index < 9; ++index) {
+        auto item = row;
+        item.set("agent_id", addon::Json_value("child-" + std::to_string(index)));
+        too_many.push_back(std::move(item));
+    }
+    nested.event.body.set("children", std::move(too_many));
+    require(checked(nested).base.observations.empty() && checked(nested).base.child_failure,
+        "Oversized nested snapshots cannot partially publish beyond the helper2 sixteen-observation bound");
+
+    auto start = event("session_start");
+    start.ledger = {};
+    start.child_state_version = 1;
+    start.event.body.set("source", addon::Json_value("load"));
+    const auto accepted = checked(start);
+    require(accepted.base.helper_response &&
+        json::member(*accepted.base.helper_response, "child_state_version").as_integer() == 1,
+        "Only an accepted native activation returns negotiated child-state observation authority to the extension");
+}
+
 } // namespace
 
 int main()
@@ -312,6 +412,7 @@ int main()
         attention_and_children();
         context_and_execution();
         root_and_child_models();
+        child_details_and_nested();
         std::puts("PASS omp native lifecycle and SDK feature contracts");
         return 0;
     }

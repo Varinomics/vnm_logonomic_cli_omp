@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { installExtension } from "../package/assets/logonomic.ts";
+import { nestedTaskSnapshots } from "../package/assets/native_children.ts";
 
 // Fixtures follow shared-events.ts, extensions/types.ts, and the public
 // task:subagent:lifecycle contract at the recorded upstream source revision.
-function harness(transport) {
+function harness(transport, childState = false) {
     const handlers = new Map();
     const channels = new Map();
     const delivered = [];
@@ -15,7 +16,8 @@ function harness(transport) {
     };
     installExtension(pi, async (request, signal) => {
         delivered.push(structuredClone(request));
-        return transport ? await transport(request, signal) : { committed: true, accepted: true };
+        const reply = transport ? await transport(request, signal) : { committed: true, accepted: true };
+        return reply && childState ? { ...reply, child_state_version: 1 } : reply;
     });
     const state = { id: "session-A", file: "/sessions/A.jsonl", idle: true,
         cwd: "/work/project/nested dir", usage: { tokens: 1200, contextWindow: 16000, percent: 7.5 },
@@ -342,6 +344,122 @@ await idleModels.tick();
 assert.notEqual(idleModels.delivered.at(-1).body.activation_nonce, oldModelNonce);
 await idleModels.emit("session_shutdown");
 assert.equal(idleModels.timers.size, 0, "shutdown explicitly retires the native-managed observer");
+
+const descendants = { results: [], progress: [{ id: "worker-native-id", agent: "worker", status: "running",
+    requests: 1, toolCount: 1, description: "Inspect the native fixture", currentTool: "read", completionPercent: 25,
+    resolvedModelIdentity: "child-provider/child-model", resolvedThinkingLevel: "high",
+    currentToolArgs: "private nested args", recentOutput: ["private nested output"],
+    inflightTaskDetails: { results: [{ id: "grandchild-native-id", agent: "worker", requests: 1,
+        exitCode: 0, aborted: true, description: "Stopped by the operator" }] } }] };
+const projected = nestedTaskSnapshots(childA.id, { inflightTaskDetails: descendants });
+assert.equal(projected.loss, undefined);
+assert.deepEqual(projected.snapshots.map(child => [child.id, child.parentId, child.depth, child.state]), [
+    ["worker-native-id", childA.id, 2, "running"], ["grandchild-native-id", "worker-native-id", 3, "interrupted"]],
+    "parent/depth come from native snapshots, and native abort wins over an exit-code-zero result");
+assert.equal(nestedTaskSnapshots(childA.id, { inflightTaskDetails: { results: [], progress: [
+    { id: "reserved", status: "pending", requests: 0 },
+    { id: "preflight-failed", status: "failed", requests: 0, toolCount: 0 }] } }).snapshots.length, 0,
+    "pending reservations and native pre-session failures never establish a running child");
+const cyclic = { results: [], progress: [] };
+cyclic.progress.push({ id: "cycle", status: "running", requests: 1, inflightTaskDetails: cyclic });
+assert.equal(nestedTaskSnapshots(childA.id, { inflightTaskDetails: cyclic }).loss, "nested_snapshot_limit");
+const overlarge = { results: [], progress: Array.from({ length: 129 }, (_, index) => ({
+    id: `nested-${index}`, status: "running", requests: 1 })) };
+assert.equal(nestedTaskSnapshots(childA.id, { inflightTaskDetails: overlarge }).loss, "nested_snapshot_limit");
+
+const nativeChildren = harness(undefined, true);
+await nativeChildren.emit("session_start");
+await nativeChildren.emit("agent_start");
+nativeChildren.child({ ...childA, status: "started", description: "Explore the fixture" });
+await nativeChildren.drain();
+assert.deepEqual(nativeChildren.delivered.at(-1).body.child,
+    { state: "running", parent_agent_id: "", depth: 1, description: "Explore the fixture" });
+nativeChildren.progress({ ...progressA, progress: { ...progressA.progress, status: "running", requests: 1,
+    description: "Native child progress", currentTool: "task", completionPercent: 50, inflightTaskDetails: descendants } });
+await nativeChildren.drain();
+const nestedDelivery = nativeChildren.delivered.find(request => request.name === "task:subagent:snapshot");
+assert(nestedDelivery);
+assert.deepEqual(nestedDelivery.body.children.map(child => [child.agent_id, child.transition, child.child.state]),
+    [["worker-native-id", "start", "running"], ["grandchild-native-id", "start_stop", "interrupted"]]);
+assert(Number(nestedDelivery.body.children[1].start_sequence) < Number(nestedDelivery.body.children[1].sequence));
+assert.equal(nestedDelivery.body.children[0].model.provider, "child-provider");
+assert.equal(nestedDelivery.body.children[0].child.progress, 0.25);
+assert(!JSON.stringify(nativeChildren.delivered).includes("private nested"));
+nativeChildren.progress({ ...progressA, progress: { ...progressA.progress, status: "running", requests: 1,
+    inflightTaskDetails: { results: [{ ...descendants.progress[0], exitCode: 1,
+        inflightTaskDetails: undefined, extractedToolData: undefined }] } } });
+await nativeChildren.drain();
+const nestedStop = nativeChildren.delivered.filter(request => request.name === "task:subagent:snapshot").at(-1);
+assert.equal(nestedStop.body.children[0].transition, "stop");
+assert.equal(nestedStop.body.children[0].child.state, "failed");
+const nestedBatches = nativeChildren.delivered.filter(request => request.name === "task:subagent:snapshot").length;
+nativeChildren.progress({ ...progressA, progress: { ...progressA.progress, status: "running", requests: 1,
+    inflightTaskDetails: descendants } });
+await nativeChildren.drain();
+assert.equal(nativeChildren.delivered.filter(request => request.name === "task:subagent:snapshot").length, nestedBatches,
+    "a retained old running snapshot cannot reopen a settled nested child");
+nativeChildren.child({ ...childA, status: "failed", description: "Native child failed" });
+await nativeChildren.drain();
+assert.equal(nativeChildren.delivered.at(-1).body.child.state, "failed");
+assert.equal(nativeChildren.delivered.at(-1).body.child.description, "Native child failed");
+await nativeChildren.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "stop" }] });
+assert.equal(nativeChildren.delivered.at(-1).name, "agent_end", "child outcome never rewrites the root's native result");
+
+const childLoss = harness(request => request.name === "task:subagent:loss" ? undefined :
+    { committed: true, accepted: true }, true);
+await childLoss.emit("session_start");
+await childLoss.emit("agent_start");
+childLoss.child({ ...childA, status: "started" });
+await childLoss.drain();
+childLoss.progress({ ...progressA, progress: { ...progressA.progress, inflightTaskDetails: overlarge } });
+await childLoss.drain();
+assert.equal(childLoss.delivered.at(-1).name, "task:subagent:loss");
+await childLoss.emit("agent_end", { willContinue: false, messages: [{ role: "assistant", stopReason: "stop" }] });
+assert.equal(childLoss.delivered.at(-1).name, "agent_end");
+assert.equal(childLoss.delivered.at(-1).body.child_loss.reason_code, "nested_snapshot_limit",
+    "unacknowledged child-only loss can ride the next genuine root fact without quarantining it");
+assert(!childLoss.delivered.some(request => request.name === "logonomic_observation_lost"));
+
+const replacedParent = harness(undefined, true);
+await replacedParent.emit("session_start");
+replacedParent.child({ ...childA, status: "started" });
+replacedParent.progress({ ...progressA, progress: { ...progressA.progress, inflightTaskDetails: descendants } });
+await replacedParent.drain();
+replacedParent.child({ ...childB, status: "started" });
+await replacedParent.drain();
+assert.equal(replacedParent.delivered.at(-1).body.child_loss.reason_code, "replaced_child_binding",
+    "replacing a native parent cannot give its retained descendants a new source binding");
+
+const legacyChildren = harness();
+await legacyChildren.emit("session_start");
+legacyChildren.child({ ...childA, status: "started" });
+legacyChildren.progress({ ...progressA, progress: { ...progressA.progress, inflightTaskDetails: descendants } });
+await legacyChildren.drain();
+assert(!legacyChildren.delivered.some(request => request.name === "task:subagent:snapshot"),
+    "older hosts without negotiated child-state loss authority retain direct-only observations");
+
+const optionalClosing = harness((request, signal) => request.name === "model_observation" ?
+    new Promise(resolve => signal.addEventListener("abort", () => resolve(undefined), { once: true })) :
+    { committed: true, accepted: true });
+await optionalClosing.emit("session_start");
+optionalClosing.state.model = { provider: "idle-new", id: "idle-new" };
+await optionalClosing.tick();
+await optionalClosing.emit("session_shutdown");
+assert.deepEqual(optionalClosing.delivered.map(request => request.name),
+    ["session_start", "model_observation", "session_shutdown"],
+    "teardown can retire stalled optional work without fabricating whole-root lifecycle loss");
+
+const childClosing = harness((request, signal) => request.name === "task:subagent:lifecycle" ?
+    new Promise(resolve => signal.addEventListener("abort", () => resolve(undefined), { once: true })) :
+    { committed: true, accepted: true }, true);
+await childClosing.emit("session_start");
+childClosing.child({ ...childA, status: "started" });
+await childClosing.drain();
+await childClosing.emit("session_shutdown");
+assert.equal(childClosing.delivered.at(-1).name, "session_shutdown");
+assert.equal(childClosing.delivered.at(-1).body.child_loss.reason_code, "child_delivery_lost",
+    "a canceled child delivery is withdrawn through the actual root shutdown fact");
+assert(!childClosing.delivered.some(request => request.name === "logonomic_observation_lost"));
 
 let cancelledStall = false;
 const stalled = harness((request, signal) => request.name === "agent_start" ?

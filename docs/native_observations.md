@@ -62,10 +62,12 @@ or shutdown. This lightweight observation never infers completion or starts a
 turn. Older native bindings without managed timers retain event-bound samples.
 Each SDK update names its observation boundary.
 
-For direct Task/eval children, the public progress snapshot supplies
-`resolvedModelIdentity` and `resolvedThinkingLevel`. The executor obtains this
-identity from the child session's serving-model attribution, which distinguishes
-an armed fallback from a model that actually served. The extension splits only
+For admitted Task/eval children, the public progress snapshot supplies
+`resolvedModelIdentity` and `resolvedThinkingLevel`. Native startup can seed
+these fields before a session starts, so those fields alone never admit a child.
+After startup, the executor updates identity from the child session's serving
+model, which distinguishes an armed fallback from a model that actually served.
+The extension splits only
 the documented provider/identity boundary; it does not guess thinking from the
 display string or use `modelOverride` as evidence. Unchanged samples are
 deduplicated after accepted delivery, and failed delivery can recover on a later
@@ -78,6 +80,56 @@ the ID. Clearing or switching the root retires all these bindings. Child model
 facts cannot create child lifecycle, overwrite root context, or complete the
 root's turn. The host independently admits the matching active child and removes
 its live model after departure.
+
+## Native child details and nested Task observations
+
+`child-state@1` adds native state, description, current tool, progress fraction,
+and structural parent/depth to independently admitted children. Optional fields
+remain absent when their native source does not supply them. Native completed,
+failed, and aborted states become succeeded, failed, and interrupted; an aborted
+settled result takes precedence over its nominal exit code. These are child
+outcomes and never become the root turn result. The host retains bounded completed
+child history separately from live child facts.
+
+Direct Task/eval admission still requires the public
+`task:subagent:lifecycle` started event. Progress retains the exact child session
+file and parent tool-call binding. Native pending entries, a seeded model, and
+pre-session failures are not starts. Direct descriptions come from the lifecycle
+or progress payload; no tool arguments or output text is copied into telemetry.
+
+After the host negotiates child-state, public direct-child progress can also
+carry nested `TaskToolDetails` through `inflightTaskDetails` and
+`extractedToolData.task`. The extension recursively projects those structured
+snapshots. A nested row must show a positive native request or executed-tool
+count before it can establish execution. A first observed settled execution
+carries distinct start and stop facts in one classification; a reserved or
+preflight-failed row with no execution evidence remains unadmitted. Parent and
+depth come from the native structure, never from parsing child ID strings.
+Snapshots do not imply that a missing descendant stopped, and a parent's stop
+does not complete its descendants.
+
+Observation is bounded to depth eight and 128 retained child identities per root
+activation. Cycles, conflicting identity bindings, capacity limits, or failure
+to deliver a native child lifecycle batch produce attributed child-only loss.
+Loss withdraws child liveness without ending the root or claiming child success.
+If its separate delivery fails, the next genuine root event can carry the loss;
+shutdown can carry loss from a canceled child delivery. Source sequences and
+captured child objects prevent old queued snapshots from acquiring a replacement
+child's authority. Older hosts without child-state retain the original direct
+child observation route and receive no expanded nested stream.
+
+This is structured Task snapshot coverage, not a universal native agent tree.
+It does not promise `/tan` or advisor coverage, every descendant before its first
+execution evidence, independent child context occupancy, or child messaging and
+control. No private whole-tree event bus or transcript parsing is used.
+
+The contract fixtures cover direct and nested state projection, source binding,
+loss, and SDK admission. In the current native acceptance environment, Task
+creation reaches the public bus but fails its temporary child-session file lock
+with `EPERM` before a started event. Root `--no-session` runs pass. Successful
+end-to-end native child execution remains unqualified until that native platform
+boundary is exercised in a supported environment; fixture coverage is not
+reported as that acceptance result.
 
 ## Source evidence
 

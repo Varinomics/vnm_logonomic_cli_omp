@@ -90,7 +90,9 @@ void append_model(
         return;
     }
     const auto agent_id = json::text(request.event.body, "agent_id");
-    if ((request.event.name == "task:subagent:progress") == agent_id.empty()) {
+    const bool child_source = request.event.name == "task:subagent:progress" ||
+        request.event.name == "task:subagent:snapshot";
+    if (child_source == agent_id.empty()) {
         result.model_failure = addon::Contract_failure{"observation_invalid",
             "Native model event must retain the root or exact child identity of its source"};
         return;
@@ -106,12 +108,56 @@ void append_model(
     update.set("sequence", json::member(request.event.body, "sequence"));
     update.set("agent_id", addon::Json_value(agent_id));
     update.set("source", addon::Json_value("omp:" + request.event.name +
-        (request.event.name == "task:subagent:progress" ? ":resolvedModelIdentity" : ":ctx.model")));
+        (child_source ? ":resolvedModelIdentity" : ":ctx.model")));
     addon::Json_value updates = addon::Json_value::array();
     updates.push_back(std::move(update));
     const auto payload = json::object({{"model_state", json::object({
         {"version", addon::Json_value(1)}, {"updates", std::move(updates)}})}});
     addon::decode_model_updates(payload, result.model_updates, result.model_failure);
+}
+
+void append_child(
+    const addon::Classify_event_request& request,
+    addon::Classify_event_result& result)
+{
+    if (request.child_state_version != 1) {
+        return;
+    }
+    addon::Json_value envelope = json::object({{"version", addon::Json_value(1)}});
+    if (const auto* loss = request.event.body.find("child_loss")) {
+        if (!json::exact_keys(*loss, {"reason_code", "source"})) {
+            result.child_failure = addon::Contract_failure{"observation_invalid", "Native child loss has an invalid shape"};
+            return;
+        }
+        auto update = *loss;
+        update.set("provider_session_id", json::member(request.event.body, "session_id"));
+        update.set("transition_nonce", json::member(request.event.body, "activation_nonce"));
+        update.set("sequence", json::member(request.event.body, "sequence"));
+        envelope.set("loss", std::move(update));
+    }
+    else
+    if (const auto* native = request.event.body.find("child")) {
+        if (!request.event.name.starts_with("task:subagent:") ||
+            json::text(request.event.body, "agent_id").empty() ||
+            !json::only_keys(*native, {"state", "parent_agent_id", "depth", "description", "current_tool", "progress"})) {
+            result.child_failure = addon::Contract_failure{"observation_invalid", "Native child detail lacks an attributed source"};
+            return;
+        }
+        auto update = *native;
+        update.set("provider_session_id", json::member(request.event.body, "session_id"));
+        update.set("transition_nonce", json::member(request.event.body, "activation_nonce"));
+        update.set("sequence", json::member(request.event.body, "sequence"));
+        update.set("agent_id", json::member(request.event.body, "agent_id"));
+        update.set("source", addon::Json_value("omp:" + request.event.name));
+        addon::Json_value updates = addon::Json_value::array();
+        updates.push_back(std::move(update));
+        envelope.set("updates", std::move(updates));
+    }
+    else {
+        return;
+    }
+    const auto payload = json::object({{"child_state", std::move(envelope)}});
+    addon::decode_child_updates(payload, result.child_updates, result.child_loss, result.child_failure);
 }
 
 } // namespace
@@ -123,6 +169,7 @@ void append_native_telemetry(
     append_context(request, result);
     append_execution(request, result);
     append_model(request, result);
+    append_child(request, result);
 }
 
 } // namespace omp

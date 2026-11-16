@@ -47,6 +47,106 @@ bool sequence(const addon::Json_value& body)
     return result.ec == std::errc{} && result.ptr == value.data() + value.size();
 }
 
+addon::Attention_classification_result classify_nested(const addon::Classify_event_request& request)
+{
+    addon::Attention_classification_result result;
+    if (request.child_state_version != 1) {
+        return result;
+    }
+    const auto invalid = [] {
+        addon::Attention_classification_result rejected;
+        rejected.base.child_failure = addon::Contract_failure{"observation_invalid",
+            "Native nested child snapshot lacks bounded execution and identity evidence"};
+        return rejected;
+    };
+    const auto& rows = json::member(request.event.body, "children");
+    if (!rows.is_array() || rows.as_array().empty() || rows.as_array().size() > 8) {
+        return invalid();
+    }
+    std::size_t index = 0;
+    for (const auto& row : rows.as_array()) {
+        if (!json::only_keys(row, {"agent_id", "agent_label", "child", "model", "transition", "sequence",
+                "start_sequence", "execution_observed"}) || !identity(row, "agent_id") || !sequence(row)) {
+            return invalid();
+        }
+        const auto& executed = json::member(row, "execution_observed");
+        const auto action = json::text(row, "transition");
+        const auto& child = json::member(row, "child");
+        const auto state = json::text(child, "state");
+        const bool terminal = state == "succeeded" || state == "failed" || state == "interrupted";
+        const auto& depth = json::member(child, "depth");
+        if (!executed.is_boolean() || !executed.as_boolean() ||
+            !identity(child, "parent_agent_id") ||
+            json::text(child, "parent_agent_id") == json::text(row, "agent_id") ||
+            !depth.is_integer() || depth.as_integer() < 2 || depth.as_integer() > 8 ||
+            ((action == "start" || action == "none") ? state != "running" :
+                (action != "stop" && action != "start_stop") || !terminal)) {
+            return invalid();
+        }
+        const auto row_sequence = json::text(row, "sequence");
+        const auto start_sequence = json::text(row, "start_sequence");
+        if (action == "start_stop") {
+            const auto start_body = json::object({{"sequence", addon::Json_value(start_sequence)}});
+            if (!sequence(start_body) || !(start_sequence.size() < row_sequence.size() ||
+                    (start_sequence.size() == row_sequence.size() && start_sequence < row_sequence))) {
+                return invalid();
+            }
+        }
+        else
+        if (row.find("start_sequence")) {
+            return invalid();
+        }
+        auto native = request;
+        native.event.body = json::object({
+            {"session_id", json::member(request.event.body, "session_id")},
+            {"activation_nonce", json::member(request.event.body, "activation_nonce")},
+            {"event_id", addon::Json_value(json::text(request.event.body, "event_id") + ":" + std::to_string(index++))},
+            {"sequence", addon::Json_value(row_sequence)},
+            {"agent_id", json::member(row, "agent_id")}, {"child", child}});
+        if (const auto* model = row.find("model")) {
+            native.event.body.set("model", *model);
+        }
+        for (const bool starts : {true, false}) {
+            if (starts ? (action != "start" && action != "start_stop") : (action != "stop" && action != "start_stop")) {
+                continue;
+            }
+            addon::Lifecycle_observation observation;
+            observation.provider_event_name = request.event.name;
+            observation.provider_session_id = json::text(native.event.body, "session_id");
+            observation.provider_event_id = json::text(native.event.body, "event_id") + (starts ? ":start" : ":stop");
+            observation.provider_sequence = starts && action == "start_stop" ? start_sequence : row_sequence;
+            observation.agent_id = json::text(row, "agent_id");
+            if (const auto* label = row.find("agent_label"); label && json::bounded_string(*label, 160, true)) {
+                observation.agent_label = label->as_string();
+            }
+            observation.subagent_transition = starts ? addon::Subagent_transition::STARTED : addon::Subagent_transition::STOPPED;
+            if (!addon::decode_lifecycle_observation(addon::encode_lifecycle_observation(observation), nullptr,
+                    addon::Lifecycle_observation_policy::HELPER_INGRESS)) {
+                return invalid();
+            }
+            result.base.observations.push_back(std::move(observation));
+        }
+        addon::Classify_event_result telemetry;
+        append_native_telemetry(native, telemetry);
+        result.base.child_updates.insert(result.base.child_updates.end(), telemetry.child_updates.begin(), telemetry.child_updates.end());
+        result.base.model_updates.insert(result.base.model_updates.end(), telemetry.model_updates.begin(), telemetry.model_updates.end());
+        if (telemetry.child_failure) {
+            result.base.child_failure = std::move(telemetry.child_failure);
+        }
+        if (telemetry.model_failure) {
+            result.base.model_failure = std::move(telemetry.model_failure);
+        }
+    }
+    if (result.base.child_failure) {
+        result.base.child_updates.clear();
+    }
+    if (result.base.model_failure) {
+        result.base.model_updates.clear();
+    }
+    result.base.classification = result.base.observations.empty() ? addon::Classification::IGNORED : addon::Classification::EVENT;
+    return result;
+}
+
 } // namespace
 
 addon::Attention_classification_result classify_native_event(const addon::Classify_event_request& request)
@@ -56,7 +156,7 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
     const auto& name = request.event.name;
     if (!json::only_keys(body, {"session_id", "activation_nonce", "previous_nonce", "event_id", "sequence",
             "turn_id", "source", "session_file", "terminal", "stop_reason", "request_id", "agent_id",
-            "agent_label", "status", "context", "execution", "model"}) ||
+            "agent_label", "status", "context", "execution", "model", "child", "child_loss", "children"}) ||
         !identity(body, "session_id") || !identity(body, "event_id") ||
         !identity(body, "turn_id", true) || !identity(body, "request_id", true) ||
         !identity(body, "agent_id", true) || !sequence(body) ||
@@ -95,6 +195,9 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
         }
         result.base.classification = addon::Classification::TRANSITION;
         result.base.transition = source == "resume" ? addon::Transition_kind::RESUME : addon::Transition_kind::START;
+        if (request.child_state_version == 1) {
+            result.base.helper_response = json::object({{"child_state_version", addon::Json_value(1)}});
+        }
     }
     else {
         if (!matches_activation(request)) {
@@ -104,8 +207,11 @@ addon::Attention_classification_result classify_native_event(const addon::Classi
             result.base.lifecycle_degradation = addon::Lifecycle_degradation{1, observation.provider_session_id};
             return result;
         }
+        if (name == "task:subagent:snapshot") {
+            return classify_nested(request);
+        }
         if (name == "message_end" || name == "session_compact" || name == "model_observation" || name == "task:subagent:progress" ||
-            name == "retry_fallback_applied" || name == "retry_fallback_succeeded") {
+            name == "retry_fallback_applied" || name == "retry_fallback_succeeded" || name == "task:subagent:loss") {
             // These optional native samples carry no turn/lifecycle inference.
             append_native_telemetry(request, result.base);
             return result;
