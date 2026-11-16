@@ -8,11 +8,19 @@ different ID, unsupported version, or unsupported storage format cannot select
 another conversation. Export never starts OMP, follows a continuation, reads
 terminal scrollback, or changes native history.
 
-Supported sources are plain local `.jsonl` files. Native `--no-session` launches
-have no persisted source to export. Compressed child histories, SQL/Redis stores,
-and older native session versions are unavailable through this reader. Existing
-native resume support is independent of export: an exact readable file can be
-exported even when native resume would choose a continuation.
+Supported sources are plain local native v3 JSONL files, including extensionless
+and custom-suffix filenames. OMP accepts an exact path such as
+`--session .omp-sessions/work`; the activation captures its absolute path.
+Export validates the file's content and native identity instead of requiring
+the conventional `.jsonl` suffix. It does not search adjacent files or append a
+suffix when that captured source is missing.
+
+Native `--no-session` launches have no persisted source to export. Compressed
+child histories, SQL/Redis stores, and older native session versions are
+unavailable through this reader. A different filename does not make compressed,
+database or malformed bytes valid JSONL. Native resume support is independent
+of export: an exact readable file can be exported even when native resume would
+choose a continuation.
 
 ## Native ordering and content
 
@@ -62,6 +70,7 @@ The source oracle is OMP commit
 
 - [`session/session-entries.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-entries.ts): version, title/header, entry graph, active-leaf semantics and reset history.
 - [`session/session-manager.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-manager.ts): `SessionEntryIndex` replacement, branch walking and native persistence.
+- [`session/session-loader.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-loader.ts) and [`session/session-storage.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-storage.ts): exact custom file paths and raw file-backed JSONL loading, without a suffix requirement.
 - [`pi-ai types`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/ai/src/types.ts) and [`TUI messages`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/tui/src/chat/messages.ts): native text, reasoning, tools, images and custom message shapes.
 
 `omp_conversation_tests` checks these native shapes against the real SDK reader
@@ -71,3 +80,28 @@ foreign identities. These are source-grounded fixtures. They do not claim that
 this workspace ran a persisted native conversation: its native file-lock route
 is denied by the environment. The separate live root acceptance uses
 `--no-session` and cannot establish persisted-history writing behavior.
+
+`tests/native_export_source_acceptance.py` additionally passes an actual native
+in-memory `SessionManager` capture through the packaged adapter and SDK host
+driver. It materializes the captured before/fork/discard records as isolated
+fixtures and compares extensionless and custom-suffix exports with a `.jsonl`
+control. All nine exports produced identical content and descriptors for their
+matching native records, and all sources remained unchanged. Six negative
+cases refused gzip, database bytes, a malformed complete record, a foreign ID,
+an unknown version, and a missing exact file with a valid `.jsonl` neighbour.
+This establishes the export route using real native record shapes; the test
+does not exercise native persisted-session writing.
+
+The opt-in gate records input, package and driver hashes, requests and outcomes:
+
+```sh
+python3 tests/native_export_source_acceptance.py \
+  --native-entries /absolute/native-session-manager-capture.json \
+  --package /absolute/build/package/logonomic.cli.omp \
+  --host-driver /absolute/build/omp_native_host_driver \
+  --artifacts /absolute/new-evidence-directory
+```
+
+The capture must contain `before`, `fork` and `after` objects with the actual
+native `header` and `entries`; this gate never fabricates a native ownership or
+resume acknowledgment from those fixtures.

@@ -42,7 +42,7 @@ remains an allowlist when the package module is added.
 | Structured work | Native RPC v2 readiness/negotiation, bounded incremental inspection, exact prompt delivery and verified terminal evidence. |
 | Read-only structured and delegated reviews | Trusted native tool-call guard, exact startup acknowledgment, native file reads and only host-authorized task-control actions. See [read-only reviews](docs/read_only_reviews.md). |
 | Delegated work and model selection | Exact requested model and supported reasoning-level selection, with native state and response validation through the same RPC path. |
-| Conversation export | Exact captured JSONL session, selected native branch, full or compact text, Markdown, and highlighted conversation formats. |
+| Conversation export | Exact captured native JSONL file, including custom filenames; selected branch; full or compact text, Markdown, and highlighted conversation formats. |
 | Historical usage | Native event ledger with fork/discard deduplication, auxiliary model calls, sealed host-selected cache retention and explicit incomplete-history coverage. |
 
 Each package declares these capabilities in `package/capabilities`;
