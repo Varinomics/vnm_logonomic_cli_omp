@@ -180,38 +180,30 @@ context loss and does not fabricate lifecycle failure or completion.
 
 ## Exact resume boundary
 
-Native `--resume`, `--session`, `--restore`, `--continue`, and `--fork` options
-remain user-controlled. The add-on records the actual admitted session id
-and file. It does not advertise the SDK's exact-record interactive-resume
-capability. In the inspected native implementation, even an absolute resume
-path first calls `findSessionContinuation`, may select a newer sibling file,
-and then calls `forkIfMovedAway`. Session ownership conflicts can also create
-a new continuation identity. There is no public CLI flag that disables these
-policies. A prior read-only file-id check cannot bind the native actor that
-will actually start. The relevant code is `createSessionManager` in
-[`main.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/main.ts)
-and the continuation/ownership handling in
-[`session-manager.ts`](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/packages/coding-agent/src/session/session-manager.ts).
+Native `--resume`, `--session`, `--restore`, `--continue` and `--fork` keep their
+native behavior. The add-on records the session ID and file OMP actually opens.
+An exact Logonomic Resume requires OMP to claim the requested ID and file or
+refuse the launch before creating or changing any other conversation.
 
-This is a missing guarded adapter implementation and qualification, rather
-than a claim that exact conditional resume is impossible. The public
-`session_start` context exposes the loaded native id and file, and the host's
-existing exact-resume confirmation rejects a different provider identity and
-closes the failed runtime. A conditional recipe could combine those routes,
-but it must prove that continuation, moved-session and ownership changes
-cannot be acknowledged as a successful exact resume. The initial native file
-selection precedes `session_start`; pathname inspection alone is insufficient.
-The current package does not implement that guard or acknowledge the SDK's
-exact-record digest.
+A native OMP 18.22.2 check on Linux x86-64 persisted a conversation using a
+loopback model. Two processes then opened that exact file with `--session`.
+Both reported the original ID and path at `session_start`, although only the
+first extension could acquire the native session ownership claim. That event
+alone cannot establish which process can keep writing the original history.
+See [native session ownership](https://github.com/can1357/oh-my-pi/blob/e1ae2cc998efd1ca151b46ebefc0e0dab6c23c63/packages/coding-agent/src/session/session-storage.ts#L1337).
 
-An isolated native persistence probe in this workspace reached RPC readiness
-and completed one local-model turn, but native file-lock acquisition failed.
-OMP exited 1 at shutdown, reported that the transcript was not durable, and
-left no session file to resume. Readiness without a write had exited 0 but
-had also created no durable transcript. Thus neither readiness nor an
-in-memory fixture qualifies the missing ownership/resume path. No native
-history was copied or rewritten and no file-lock implementation was replaced
-to bypass this boundary.
+After both processes exited, the check used `omp session moved <file> --to <host>`
+on the isolated fixture. Launching `omp --session <file>` created a second
+durable journal with a new ID. An extension that exited the process at the
+first `session_start` could already read that new ID and path. OMP resolves
+continuations and forks moved sessions before loading startup extensions.
+See [native session selection](https://github.com/can1357/oh-my-pi/blob/e1ae2cc998efd1ca151b46ebefc0e0dab6c23c63/packages/coding-agent/src/main.ts#L1324)
+and [the persisted moved-session fork](https://github.com/can1357/oh-my-pi/blob/e1ae2cc998efd1ca151b46ebefc0e0dab6c23c63/packages/coding-agent/src/session/session-transfer.ts#L678).
+
+The transfer or ownership state can change between a read-only adapter probe
+and native launch. The SDK's exact-record capability therefore remains
+undeclared for this integration. It requires a native launch operation that
+checks and holds the exact target before continuation selection or forking.
 
 Read-only structured/delegated tasks use a separate, implemented native
 tool-execution guard; see [Read-only reviews](read_only_reviews.md).
