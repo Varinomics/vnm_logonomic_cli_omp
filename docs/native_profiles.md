@@ -71,7 +71,12 @@ spelling occurs in their bytes, or its bounded inspection cannot establish the
 source. This deliberately includes selector names inside comments and quoted
 values: native runtime grammar, including BOM prefixes, colon delimiters and
 whitespace across lines, must not turn a partial parser into a wrong account
-acknowledgment. Credential-only files without selector spellings remain allowed;
+acknowledgment. OMP reads `.env` in the project, agent, config and home
+directories. Bun also reads mode-specific dotenv files in its startup directory.
+Accounts, usage and interactive preparation capture `NODE_ENV` to select them.
+Structured and delegated sessions inspect the files for all three Bun modes
+when their filtered launch environment leaves the inherited mode unknown.
+Credential-only files without selector spellings remain allowed;
 their values are neither imported into the adapter environment nor returned.
 Windows drive-relative paths are
 also unavailable because the request does not contain native per-drive state.

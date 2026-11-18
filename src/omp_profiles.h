@@ -37,7 +37,8 @@ std::optional<Native_profile> resolve_native_profile(
     std::string_view default_home_fallback,
     std::optional<std::span<const std::string>> host_argv,
     const std::function<bool()>& cancelled,
-    logonomic::cli_addon::Contract_failure* failure);
+    logonomic::cli_addon::Contract_failure* failure,
+    bool node_env_declared = true);
 
 bool validate_native_account(
     const logonomic::cli_addon::Session_launch_context& request,

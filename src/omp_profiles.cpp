@@ -206,52 +206,42 @@ bool path_exists(const fs::path& path)
 // colon delimiters and whitespace across lines, and its grammar is runtime-owned.
 // Refuse any selector spelling, even inside comments or quoted values, instead
 // of admitting a file on the strength of a partial dotenv interpretation.
-void check_dotenv(const std::set<fs::path>& directories, const std::function<bool()>& cancelled)
+void check_dotenv(const std::set<fs::path>& files, const std::function<bool()>& cancelled)
 {
-    std::size_t sources = 0;
     constexpr std::string_view selectors[] = {"HOME", "USERPROFILE", "OMP_PROFILE", "PI_PROFILE",
         "PI_CONFIG_DIR", "OMP_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_CODING_AGENT_DIR",
         "PI_CODING_AGENT_SESSION_DIR", "OMP_CODING_AGENT_SESSION_DIR", "XDG_DATA_HOME",
         "XDG_STATE_HOME", "XDG_CACHE_HOME"};
-    for (const auto& directory : directories) {
+    for (const auto& file : files) {
         check_cancelled(cancelled);
-        if (!path_exists(directory)) {
+        std::error_code error;
+        const auto status = fs::status(file, error);
+        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory) {
             continue;
         }
-        std::error_code error;
-        fs::directory_iterator iterator(directory, error);
         if (error) {
             throw Profile_error("native_profile_source_unavailable");
         }
-        for (const auto& item : iterator) {
+        if (!fs::is_regular_file(status)) {
+            continue;
+        }
+        std::ifstream input(file, std::ios::binary);
+        if (!input) throw Profile_error("native_profile_source_unavailable");
+        std::string content;
+        char buffer[4096];
+        while (input.read(buffer, sizeof(buffer)) || input.gcount() != 0) {
             check_cancelled(cancelled);
-            const auto name = addon::path_to_utf8(item.path().filename());
-            if (name != ".env" && !name.starts_with(".env.")) {
-                continue;
-            }
-            if (++sources > 64) throw Profile_error("native_profile_environment_unsupported");
-            if (!item.is_regular_file(error)) {
-                if (error) throw Profile_error("native_profile_source_unavailable");
-                continue;
-            }
-            std::ifstream input(item.path(), std::ios::binary);
-            if (!input) throw Profile_error("native_profile_source_unavailable");
-            std::string content;
-            char buffer[4096];
-            while (input.read(buffer, sizeof(buffer)) || input.gcount() != 0) {
-                check_cancelled(cancelled);
-                content.append(buffer, static_cast<std::size_t>(input.gcount()));
-                if (content.size() > 1024 * 1024) throw Profile_error("native_profile_environment_unsupported");
-            }
-            if (!input.eof()) throw Profile_error("native_profile_source_unavailable");
-            for (auto& character : content) {
-                if (character >= 'a' && character <= 'z') character -= 'a' - 'A';
-            }
-            if (std::any_of(std::begin(selectors), std::end(selectors), [&](const auto selector) {
-                    return content.find(selector) != std::string::npos;
-                })) {
-                throw Profile_error("native_profile_environment_unsupported");
-            }
+            content.append(buffer, static_cast<std::size_t>(input.gcount()));
+            if (content.size() > 1024 * 1024) throw Profile_error("native_profile_environment_unsupported");
+        }
+        if (!input.eof()) throw Profile_error("native_profile_source_unavailable");
+        for (auto& character : content) {
+            if (character >= 'a' && character <= 'z') character -= 'a' - 'A';
+        }
+        if (std::any_of(std::begin(selectors), std::end(selectors), [&](const auto selector) {
+                return content.find(selector) != std::string::npos;
+            })) {
+            throw Profile_error("native_profile_environment_unsupported");
         }
     }
 }
@@ -322,7 +312,7 @@ Selectors selectors(const Launcher_command& launcher)
 
 Native_profile resolve(const addon::Launcher_request& request, const addon::Launch_environment& environment,
     std::string_view normalization_directory, std::string_view fallback,
-    std::optional<std::span<const std::string>> argv, const std::function<bool()>& cancelled)
+    std::optional<std::span<const std::string>> argv, const std::function<bool()>& cancelled, bool node_env_declared)
 {
     check_cancelled(cancelled);
     if (!native_platform(environment.platform_id)) throw Profile_error("native_profile_platform_unavailable");
@@ -383,7 +373,25 @@ Native_profile resolve(const addon::Launcher_request& request, const addon::Laun
         }
     }
     auto project = options.cwd ? normalize_path(*options.cwd, *cwd) : *cwd;
-    check_dotenv({*home, *cwd, project, profile.config, profile.agent}, cancelled);
+    std::set<fs::path> dotenv{*cwd / ".env", project / ".env", *home / ".env",
+        profile.config / ".env", profile.agent / ".env"};
+    // Only Bun's startup directory has mode-specific files. Structured and
+    // delegated sessions may inherit NODE_ENV outside their filtered snapshot.
+    auto mode = env(environment, "NODE_ENV");
+    if ((mode || node_env_declared) && mode != "test" && mode != "production") {
+        mode = "development";
+    }
+    if (mode != "test") {
+        dotenv.insert(*cwd / ".env.local");
+    }
+    for (const std::string candidate : {"development", "production", "test"}) {
+        if (mode && *mode != candidate) {
+            continue;
+        }
+        dotenv.insert(*cwd / (".env." + candidate));
+        dotenv.insert(*cwd / (".env." + candidate + ".local"));
+    }
+    check_dotenv(dotenv, cancelled);
     profile.source_profile = canonical_profile(profile.agent != default_agent ? profile.agent : profile.config);
     auto key_path = addon::path_to_utf8(profile.source_profile);
     if (windows) key_path = addon::lower(std::move(key_path));
@@ -416,10 +424,11 @@ void set_failure(addon::Contract_failure* failure, const std::string& reason)
 std::optional<Native_profile> resolve_native_profile(const addon::Launcher_request& launcher,
     const addon::Launch_environment& environment, std::string_view normalization_directory,
     std::string_view default_home_fallback, std::optional<std::span<const std::string>> host_argv,
-    const std::function<bool()>& cancelled, addon::Contract_failure* failure)
+    const std::function<bool()>& cancelled, addon::Contract_failure* failure, bool node_env_declared)
 {
     try {
-        return resolve(launcher, environment, normalization_directory, default_home_fallback, host_argv, cancelled);
+        return resolve(launcher, environment, normalization_directory, default_home_fallback, host_argv,
+            cancelled, node_env_declared);
     }
     catch (const Profile_error& error) {
         set_failure(failure, error.what());
@@ -430,7 +439,10 @@ std::optional<Native_profile> resolve_native_profile(const addon::Launcher_reque
     return std::nullopt;
 }
 
-bool validate_native_account(const addon::Session_launch_context& request,
+namespace {
+
+template<typename Request>
+bool validate_account(const Request& request, bool node_env_declared,
     const std::function<bool()>& cancelled, addon::Contract_failure* failure)
 {
     if (!request.account_context) return true;
@@ -439,7 +451,7 @@ bool validate_native_account(const addon::Session_launch_context& request,
         return false;
     }
     const auto profile = resolve_native_profile(request.launcher, *request.launch_environment,
-        request.working_directory, {}, request.launcher_argv, cancelled, failure);
+        request.working_directory, {}, request.launcher_argv, cancelled, failure, node_env_declared);
     if (!profile) return false;
     const auto& account = *request.account_context;
     if (account.adapter_account_key != profile->account_key ||
@@ -450,16 +462,18 @@ bool validate_native_account(const addon::Session_launch_context& request,
     return true;
 }
 
+} // namespace
+
+bool validate_native_account(const addon::Session_launch_context& request,
+    const std::function<bool()>& cancelled, addon::Contract_failure* failure)
+{
+    return validate_account(request, false, cancelled, failure);
+}
+
 bool validate_native_account(const addon::Prepare_request& request,
     const std::function<bool()>& cancelled, addon::Contract_failure* failure)
 {
-    addon::Session_launch_context context;
-    context.launcher = request.launcher;
-    context.launcher_argv = request.launcher_argv;
-    context.working_directory = request.working_directory;
-    context.account_context = request.account_context;
-    context.launch_environment = request.launch_environment;
-    return validate_native_account(context, cancelled, failure);
+    return validate_account(request, true, cancelled, failure);
 }
 
 void handle_accounts(addon::Invocation_context& context)
@@ -518,7 +532,7 @@ void handle_accounts(addon::Invocation_context& context)
             environment.effective_environment = addon::Json_value::object();
             for (const auto& [key, value] : values) environment.effective_environment.set(key, addon::Json_value(value));
             const auto profile = resolve({"omp", "direct", ""}, environment,
-                request->normalization_directory, request->default_home_fallback, std::nullopt, cancelled);
+                request->normalization_directory, request->default_home_fallback, std::nullopt, cancelled, true);
             // Empty default profiles are still native selectable sources; the
             // status is unknown until their filesystem source exists.
             profiles.emplace(profile.account_key, profile);

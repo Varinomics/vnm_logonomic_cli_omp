@@ -116,7 +116,7 @@ void selectors_and_paths(const char* executable)
         "Named native profiles override the agent-directory environment and legacy selector");
     f.request.launcher.script_body = "omp --profile default";
     require(f.profile().agent == f.root / "custom", "Explicit default restores a non-profile agent override");
-    f.set("PI_CODING_AGENT_DIR", addon::path_to_utf8(f.home / ".omp/profiles/work/agent"));
+    f.set("PI_CODING_AGENT_DIR", addon::path_to_utf8((f.home / ".omp/profiles/work/agent").make_preferred()));
     require(f.profile().agent == f.home / ".omp/agent", "Inherited profile-derived agent paths cannot become the default override");
     f.request.launcher.script_body = "omp";
     f.set("OMP_PROFILE", "");
@@ -263,6 +263,17 @@ void xdg_and_environment(const char* executable)
 #endif
     std::ofstream(f.cwd / ".env") << "OPENAI_API_KEY=fixture-not-a-live-key\n";
     require(!f.profile().account_key.empty(), "Ordinary native credential dotenv files are not interpreted or rejected");
+    std::ofstream(f.home / ".env.example") << "PI_PROFILE=example\n";
+    std::ofstream(f.home / ".env.local") << "PI_PROFILE=local\n";
+    std::ofstream(f.cwd / ".env.example") << "PI_PROFILE=example\n";
+    require(f.accounts("discover").result.has_value(), "Unused dotenv templates do not change native accounts");
+    std::ofstream(f.cwd / ".env.production.local") << "PI_PROFILE=production\n";
+    require(f.accounts("resolve").result.has_value(), "Bun defaults to development when NODE_ENV is absent");
+    f.set("NODE_ENV", "development");
+    require(!f.profile().account_key.empty(), "Bun development mode ignores production dotenv files");
+    f.set("NODE_ENV", "production");
+    require(f.failure() == "native_profile_environment_unsupported", "Bun loads the selected mode's local dotenv");
+    fs::remove(f.cwd / ".env.production.local");
     for (const auto* content : {
             "export PI_CODING_AGENT_DIR=unresolved-native-source\n",
             "\xef\xbb\xbfPI_CONFIG_DIR=.redirected\n",
