@@ -428,7 +428,12 @@ void set_failure(addon::Contract_failure* failure, const std::string& reason)
 
 bool matches_native_account(const Native_profile& profile, const addon::Account_context& grant)
 {
-    if (grant.version == 1) return grant.adapter_account_key == profile.account_key;
+    if (grant.version == 1) {
+        // A removed case-sensitive parent can otherwise make a prospective
+        // Windows key equal the old shared key of its distinct children.
+        return grant.adapter_account_key == profile.account_key && addon::account_profile_allows_key_only(
+            profile.source_profile, addon::Account_profile_case_fold::ASCII);
+    }
     if (grant.version != 2 || !grant.profile_path) return false;
     const auto granted = addon::path_from_utf8(*grant.profile_path);
     if (!addon::same_native_account_profile(granted, profile.source_profile)) return false;

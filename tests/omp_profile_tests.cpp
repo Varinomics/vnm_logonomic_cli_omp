@@ -390,7 +390,8 @@ void filesystem_account_grants(const char* executable)
         return "omp-profile:" + addon::to_hex(addon::Sha256::digest(path));
     };
     const auto ordinary = select(profiles / addon::path_from_utf8("Caf\xc3\x89"));
-    require(ordinary.account_key == legacy_key(ordinary.source_profile), "An ordinary profile retains its historical key");
+    require(ordinary.account_key == legacy_key(ordinary.source_profile) &&
+        omp::matches_native_account(ordinary, {1, ordinary.account_key}), "An ordinary profile retains its historical key and grant");
     fs::create_directory(ordinary.source_profile);
     const auto existing = select(ordinary.source_profile);
     require(existing.account_key == ordinary.account_key, "Creating a selected profile preserves its identity");
@@ -446,6 +447,8 @@ void filesystem_account_grants(const char* executable)
         "A historical path-bearing grant identifies only its original native source");
     const auto pending = select(sensitive / "missing-parent" / "agent");
     const addon::Account_context historical{2, legacy_key(pending.source_profile), addon::path_to_utf8(pending.source_profile)};
+    require(omp::matches_native_account(pending, {1, pending.account_key}),
+        "A newly separated key remains eligible below an observed sensitive ancestor");
     require(!omp::matches_native_account(pending, historical), "An unobserved parent cannot admit a historical folded key");
     fs::create_directories(pending.source_profile);
     require(omp::matches_native_account(select(pending.source_profile), historical),
@@ -457,6 +460,10 @@ void filesystem_account_grants(const char* executable)
     require(upper.account_key != lower.account_key &&
         omp::matches_native_account(lower, {2, upper.account_key, addon::path_to_utf8(upper.source_profile)}),
         "A current path-bearing grant preserves Unicode aliases inside a mixed-case-mode path");
+    fs::remove_all(sensitive);
+    require(!omp::matches_native_account(select(first.source_profile), {1, old}) &&
+        !omp::matches_native_account(select(second.source_profile), {1, old}),
+        "Deleting the sensitive parent cannot grant a historical shared key to either prospective profile");
 #endif
 }
 
