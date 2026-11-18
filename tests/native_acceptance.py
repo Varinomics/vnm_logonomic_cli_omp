@@ -228,15 +228,14 @@ class Native_case:
         self.root.mkdir(parents=True, exist_ok=False)
         for part in ("bin", "home", "agent", "workspace", "natives", "plugin"):
             (self.root / part).mkdir()
-        if arguments.omp is None:
+        launcher = getattr(arguments, "omp", None)
+        if launcher is None:
             bun = arguments.runtime / "node_modules/@oven/bun-linux-x64/bin/bun"
             cli = arguments.runtime / "node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js"
             require(bun.is_file() and cli.is_file(), "Install the official OMP and Bun packages before this gate")
             launcher = self.root / "bin/omp"
             launcher.write_text(f"#!/bin/sh\nexec {shlex.quote(str(bun))} {shlex.quote(str(cli))} \"$@\"\n")
             launcher.chmod(0o755)
-        else:
-            launcher = arguments.omp
         system_path = str(Path(os.environ["SystemRoot"]) / "System32") if os.name == "nt" else "/usr/bin:/bin"
         self.environment = {"PATH": os.pathsep.join((str(launcher.parent), system_path)), "LANG": "C.UTF-8",
             "HOME": str(self.root / "home"), "PI_CODING_AGENT_DIR": str(self.root / "agent"),
