@@ -38,6 +38,8 @@ CHILD_PROMPT = "NATIVE_CHILD_TASK: return the isolated child result."
 GRANDCHILD_PROMPT = "NATIVE_GRANDCHILD_TASK: return the isolated grandchild result."
 CHILD_ANSWER = "NATIVE_CHILD_RESULT"
 GRANDCHILD_ANSWER = "NATIVE_GRANDCHILD_RESULT"
+NATIVE_PLATFORM = {("linux", "x86_64"): "linux-x86_64", ("win32", "amd64"): "windows-x86_64",
+        ("darwin", "arm64"): "macos-arm64"}.get((sys.platform, platform.machine().lower()))
 OBSERVATION_SCENARIOS = ("lifecycle", "child", "nested-child", "cwd")
 BASE_ENVIRONMENT = {"PATH", "PATHEXT", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
                     "SystemRoot", "TEMP", "TMP", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
@@ -371,7 +373,7 @@ class Native_case:
         request = {"purpose": "implementation", "launcher": {"script_body": " ".join(self.argv),
             "runner_key": "direct", "environment_text": ""}, "launcher_argv": self.argv,
             "working_directory": str(self.root / "workspace"),
-            "launch_environment": {"platform": self.arguments.platform_id, "effective_environment":
+            "launch_environment": {"platform": NATIVE_PLATFORM, "effective_environment":
                 self.frozen_environment("delegated-session" if delegated else "structured-session", 3)},
             "prompt_base64": base64.b64encode(PROMPT.encode()).decode(), "declared_assets": []}
         if delegated:
@@ -415,7 +417,7 @@ class Native_case:
         path = self.root / f"host-{name}.json"
         write_json(path, script)
         result = subprocess.run([str(self.arguments.host_simulator), str(self.arguments.package),
-            "--script", str(path), "--platform", self.arguments.platform_id], capture_output=True, text=True, timeout=15)
+            "--script", str(path), "--platform", NATIVE_PLATFORM], capture_output=True, text=True, timeout=15)
         (self.root / f"host-{name}.txt").write_text(result.stdout + result.stderr)
         require(result.returncode == 0, f"SDK host simulator failed: {result.stderr}")
         frames = [json.loads(line[2:]) for line in result.stdout.splitlines() if line.startswith("< ")]
@@ -597,7 +599,7 @@ class Native_case:
                 start = next(row["body"] for row in self.delivered_events() if row["name"] == "session_start")
                 target = {"session": {"provider_session_id": start["session_id"],
                     "working_directory": str(self.root / "workspace"), "launcher_argv": self.argv,
-                    "launch_environment": {"platform": self.arguments.platform_id,
+                    "launch_environment": {"platform": NATIVE_PLATFORM,
                         "effective_environment": self.frozen_environment("session-wake", 1)}},
                     "correlation": {"version": 1, "transition_nonce": start["activation_nonce"]},
                     "binding": offer["binding"]}
@@ -757,7 +759,7 @@ class Native_case:
     def run(self, delegated):
         process = None
         try:
-            discovered = self.host("launcher-discovery", 1, "discover", {"platform": self.arguments.platform_id,
+            discovered = self.host("launcher-discovery", 1, "discover", {"platform": NATIVE_PLATFORM,
                 "ambient_environment": self.frozen_environment("launcher-discovery", 1),
                 "default_home_fallback": str(self.root / "home")}, "discover")
             require(any(row.get("script_body") == "omp" for row in discovered["candidates"]),
@@ -766,7 +768,7 @@ class Native_case:
             request = self.prepare_request(delegated)
             if self.name == "profile":
                 account_request = {"launcher": request["launcher"],
-                    "launch_environment": {"platform": self.arguments.platform_id,
+                    "launch_environment": {"platform": NATIVE_PLATFORM,
                         "effective_environment": self.frozen_environment("accounts", 2)},
                     "normalization_directory": str(self.root / "workspace"),
                     "default_home_fallback": str(self.root / "home")}
@@ -955,10 +957,8 @@ def main():
         "child", "nested-child", "cwd", "initial-prompt", "wake", "idle-model", "compaction", "helper-custody",
         "fallback-selected", "fallback-preserved", "all"), default="all")
     arguments = parser.parse_args()
-    arguments.platform_id = {("linux", "x86_64"): "linux-x86_64", ("win32", "amd64"): "windows-x86_64",
-        ("darwin", "arm64"): "macos-arm64"}.get((sys.platform, platform.machine().lower()))
-    require(arguments.platform_id, "Unsupported native add-on platform")
-    if arguments.platform_id != "linux-x86_64":
+    require(NATIVE_PLATFORM, "Unsupported native add-on platform")
+    if NATIVE_PLATFORM != "linux-x86_64":
         require(arguments.omp and arguments.scenario in ("structured", "profile"),
                 "Select the structured or profile pipe scenario and supply the native executable")
     if arguments.omp is not None:
