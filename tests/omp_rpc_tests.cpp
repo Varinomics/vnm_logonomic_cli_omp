@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -132,19 +133,22 @@ addon::Structured_prepare_request request_for(const Temporary_directory& directo
 class Conversation
 {
 public:
-    explicit Conversation(std::string state)
+    explicit Conversation(std::string state, std::uint32_t model_state_version = 0)
     :
-        m_state(std::move(state))
+        m_state(std::move(state)),
+        m_model_state_version(model_state_version)
     {}
 
     addon::Structured_inspect_result bytes(std::string output, bool final = false, int exit_code = 0)
     {
-        addon::Structured_inspection inspection;
+        addon::Structured_inspect_request request;
+        request.model_state_version = m_model_state_version;
+        auto& inspection = request.inspection;
         inspection.protocol_state = m_state;
         inspection.stdout_bytes = std::move(output);
         inspection.final = final;
         inspection.exit_code = exit_code;
-        auto result = omp::inspect_rpc(inspection);
+        auto result = omp::inspect_rpc(request);
         const auto encoded = addon::encode_structured_inspect_result(result, true);
         addon::Contract_failure failure;
         require(addon::decode_structured_inspect_result(encoded, final, &failure).has_value(),
@@ -178,6 +182,7 @@ public:
 
 private:
     std::string m_state;
+    std::uint32_t m_model_state_version;
 };
 
 std::string prepared_state(const addon::Structured_prepare_request& request)
@@ -336,6 +341,27 @@ void ambient_profile_contract(const Temporary_directory& directory)
     }
 }
 
+void serving_model_contract(const addon::Structured_prepare_request& request)
+{
+    Conversation conversation(prepared_state(request), 1);
+    require(!conversation.start().model_observation, "The configured model does not identify a serving model");
+    conversation.send(response("lg-prompt", "prompt"));
+
+    auto fallback = assistant("retry answer");
+    fallback.find("message")->set("model", Json("served-fallback"));
+    const auto sample = conversation.bytes(line(assistant("first attempt")) + line(fallback));
+    require(sample.model_observation && sample.model_observation->provider == "test" &&
+        sample.model_observation->model == "served-fallback",
+        "The latest native assistant message identifies the serving model even when it differs from the launcher");
+    fallback.find("message")->set("model", Json("invalid\nlabel"));
+    const auto malformed = conversation.send(fallback);
+    require(!malformed.model_observation && !malformed.failure_reason,
+        "An invalid optional model label leaves the native task usable");
+    const auto final = conversation.bytes(line(assistant("finished")) + line(prompt_result()), true);
+    require(final.result_bytes == "finished" && final.model_observation && final.model_observation->model == "exact-model",
+        "A final inspection carries the native assistant model alongside its answer");
+}
+
 void completion_contract(const addon::Structured_prepare_request& request)
 {
     Conversation conversation(prepared_state(request));
@@ -346,7 +372,8 @@ void completion_contract(const addon::Structured_prepare_request& request)
     require(!admitted.complete && !admitted.close_stdin, "Prompt admission is not task completion");
     conversation.send(parse(R"({"type":"message_update","messageId":"msg-2","assistantMessageEvent":{"type":"thinking_delta","delta":"secret thought"}})"));
     conversation.send(parse(R"({"type":"message_update","messageId":"msg-2","assistantMessageEvent":{"type":"text_delta","delta":"partial answer"}})"));
-    conversation.send(assistant("first yield"));
+    require(!conversation.send(assistant("first yield")).model_observation,
+        "An inspection without model-state negotiation carries only the ordinary task result");
     const auto ended = conversation.send(parse(R"({"type":"agent_end","messages":[],"messageCount":3,"isTerminal":true,"awaitingAsyncWork":true})"));
     require(!ended.complete && !ended.close_stdin, "An agent_end must never authenticate completion");
     const auto yielded = conversation.send(prompt_result(false));
@@ -438,11 +465,12 @@ void failure_contract(const addon::Structured_prepare_request& request)
     incomplete.send(response("lg-prompt", "prompt"));
     incomplete.send(assistant("partial"));
     require(incomplete.bytes({}, true).failure_reason == "omp_incomplete", "Exit zero alone must not authenticate completion");
-    addon::Structured_inspection timed;
+    addon::Structured_inspect_request timeout_request;
+    auto& timed = timeout_request.inspection;
     timed.protocol_state = state;
     timed.final = true;
     timed.timed_out = true;
-    require(omp::inspect_rpc(timed).failure_reason == "omp_timed_out", "The host task timeout remains authoritative");
+    require(omp::inspect_rpc(timeout_request).failure_reason == "omp_timed_out", "The host task timeout remains authoritative");
 
     Conversation persistent(state);
     persistent.start();
@@ -453,7 +481,7 @@ void failure_contract(const addon::Structured_prepare_request& request)
     require(!persistent.bytes({}).complete && !persistent.bytes({}).close_stdin,
         "Silence must not fabricate settlement or suppress background delivery");
     timed.protocol_state = persistent.state();
-    require(omp::inspect_rpc(timed).failure_reason == "omp_timed_out",
+    require(omp::inspect_rpc(timeout_request).failure_reason == "omp_timed_out",
         "A persistent native job must not defeat the original host task deadline");
 }
 
@@ -616,7 +644,7 @@ int exchange_driver(std::string_view operation)
     if (operation == "--inspect") {
         const auto request = addon::decode_structured_inspect_request(payload, &failure);
         require(request.has_value(), "Native inspection request must match the SDK contract");
-        output = addon::encode_structured_inspect_result(omp::inspect_rpc(request->inspection), true);
+        output = addon::encode_structured_inspect_result(omp::inspect_rpc(*request), true);
     }
     else
     if (operation == "--prepare") {
@@ -656,6 +684,7 @@ int main(int argc, char** argv)
         review_contract(directory);
         ambient_profile_contract(directory);
         const auto request = request_for(directory);
+        serving_model_contract(request);
         completion_contract(request);
         failure_contract(request);
         framing_contract(request);

@@ -9,12 +9,10 @@ import argparse
 import base64
 import hashlib
 import http.server
-import fcntl
 import json
 import os
 from pathlib import Path
 import platform
-import pty
 import queue
 import re
 import shlex
@@ -24,7 +22,11 @@ import subprocess
 import sys
 import threading
 import time
-import termios
+
+if os.name == "posix":
+    import fcntl
+    import pty
+    import termios
 
 
 ANSWER = "Native OMP completed the isolated fixture."
@@ -38,7 +40,7 @@ CHILD_ANSWER = "NATIVE_CHILD_RESULT"
 GRANDCHILD_ANSWER = "NATIVE_GRANDCHILD_RESULT"
 OBSERVATION_SCENARIOS = ("lifecycle", "child", "nested-child", "cwd")
 BASE_ENVIRONMENT = {"PATH", "PATHEXT", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
-                    "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
+                    "SystemRoot", "TEMP", "TMP", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
 
 
 def require(condition, message):
@@ -59,19 +61,24 @@ def write_json(path, value):
 
 
 def record_metadata(arguments):
-    cli = arguments.runtime / "node_modules/@oh-my-pi/pi-coding-agent"
-    bun = arguments.runtime / "node_modules/@oven/bun-linux-x64/bin/bun"
     files = {"harness": Path(__file__), "driver": arguments.driver,
-        "host_simulator": arguments.host_simulator,
-        "native_cli": cli / "dist/cli.js", "bun": bun}
+        "host_simulator": arguments.host_simulator}
+    native = {}
+    if arguments.omp is not None:
+        files["native_cli"] = arguments.omp
+    else:
+        cli = arguments.runtime / "node_modules/@oh-my-pi/pi-coding-agent"
+        bun = arguments.runtime / "node_modules/@oven/bun-linux-x64/bin/bun"
+        files.update({"native_cli": cli / "dist/cli.js", "bun": bun})
+        native["native_package"] = json.loads((cli / "package.json").read_text())["version"]
+        native["bun"] = subprocess.check_output([str(bun), "--version"], text=True, timeout=5).strip()
     if arguments.host_driver is not None:
         files["host_driver"] = arguments.host_driver
     files.update({"package/" + str(path.relative_to(arguments.package)): path
         for path in arguments.package.rglob("*") if path.is_file()})
     write_json(arguments.artifacts / "metadata.json", {
         "platform": platform.platform(), "python": platform.python_version(),
-        "native_package": json.loads((cli / "package.json").read_text())["version"],
-        "bun": subprocess.check_output([str(bun), "--version"], text=True, timeout=5).strip(),
+        **native,
         "file_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in sorted(files.items())},
         "native_session_persistence": False,
         "model_transport": "isolated loopback OpenAI-compatible fixture",
@@ -238,15 +245,23 @@ class Native_case:
         self.root.mkdir(parents=True, exist_ok=False)
         for part in ("bin", "home", "agent", "workspace", "natives", "plugin"):
             (self.root / part).mkdir()
-        bun = arguments.runtime / "node_modules/@oven/bun-linux-x64/bin/bun"
-        cli = arguments.runtime / "node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js"
-        require(bun.is_file() and cli.is_file(), "Install the official OMP and Bun packages before this gate")
-        launcher = self.root / "bin/omp"
-        launcher.write_text(f"#!/bin/sh\nexec {shlex.quote(str(bun))} {shlex.quote(str(cli))} \"$@\"\n")
-        launcher.chmod(0o755)
-        self.environment = {"PATH": str(self.root / "bin") + ":/usr/bin:/bin", "LANG": "C.UTF-8",
+        if arguments.omp is None:
+            bun = arguments.runtime / "node_modules/@oven/bun-linux-x64/bin/bun"
+            cli = arguments.runtime / "node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js"
+            require(bun.is_file() and cli.is_file(), "Install the official OMP and Bun packages before this gate")
+            launcher = self.root / "bin/omp"
+            launcher.write_text(f"#!/bin/sh\nexec {shlex.quote(str(bun))} {shlex.quote(str(cli))} \"$@\"\n")
+            launcher.chmod(0o755)
+        else:
+            launcher = arguments.omp
+        system_path = str(Path(os.environ["SystemRoot"]) / "System32") if os.name == "nt" else "/usr/bin:/bin"
+        self.environment = {"PATH": os.pathsep.join((str(launcher.parent), system_path)), "LANG": "C.UTF-8",
             "HOME": str(self.root / "home"), "PI_CODING_AGENT_DIR": str(self.root / "agent"),
             "PI_NATIVES_DIR": str(self.root / "natives"), "PI_NO_TITLE": "1", "PI_NO_PTY": "1"}
+        if os.name == "nt":
+            self.environment.update({"USERPROFILE": str(self.root / "home"), "PATHEXT": ".EXE",
+                "SystemRoot": os.environ["SystemRoot"], "TEMP": str(self.root), "TMP": str(self.root),
+                "APPDATA": str(self.root / "home/Roaming"), "LOCALAPPDATA": str(self.root / "home/Local")})
         agent_directory = self.root / "agent"
         if name == "profile":
             self.environment.update({"OMP_PROFILE": "chosen", "PI_PROFILE": "ignored", "PI_CONFIG_DIR": ".omp-fixture"})
@@ -374,7 +389,7 @@ class Native_case:
         request = {"purpose": "implementation", "launcher": {"script_body": " ".join(self.argv),
             "runner_key": "direct", "environment_text": ""}, "launcher_argv": self.argv,
             "working_directory": str(self.root / "workspace"),
-            "launch_environment": {"platform": "linux-x86_64", "effective_environment":
+            "launch_environment": {"platform": self.arguments.platform_id, "effective_environment":
                 self.frozen_environment("delegated-session" if delegated else "structured-session", 3)},
             "prompt_base64": base64.b64encode(PROMPT.encode()).decode(), "declared_assets": []}
         if delegated:
@@ -418,7 +433,7 @@ class Native_case:
         path = self.root / f"host-{name}.json"
         write_json(path, script)
         result = subprocess.run([str(self.arguments.host_simulator), str(self.arguments.package),
-            "--script", str(path), "--platform", "linux-x86_64"], capture_output=True, text=True, timeout=15)
+            "--script", str(path), "--platform", self.arguments.platform_id], capture_output=True, text=True, timeout=15)
         (self.root / f"host-{name}.txt").write_text(result.stdout + result.stderr)
         require(result.returncode == 0, f"SDK host simulator failed: {result.stderr}")
         frames = [json.loads(line[2:]) for line in result.stdout.splitlines() if line.startswith("< ")]
@@ -427,7 +442,7 @@ class Native_case:
         return terminal["payload"]
 
     def inspect(self, state, output=b"", error=b"", final=False, exit_code=0, timed_out=False):
-        request = {"purpose": "implementation", "failure_diagnostics": {"version": 1},
+        request = {"purpose": "implementation", "failure_diagnostics": {"version": 1}, "model_state": {"version": 1},
             "inspection": {"protocol_state_base64_chunks": state,
             "stdout_base64_chunks": chunks(output), "stderr_base64_chunks": chunks(error),
             "final": final, "timed_out": timed_out, "exit_code": exit_code}}
@@ -591,7 +606,7 @@ class Native_case:
                 start = next(row["body"] for row in self.delivered_events() if row["name"] == "session_start")
                 target = {"session": {"provider_session_id": start["session_id"],
                     "working_directory": str(self.root / "workspace"), "launcher_argv": self.argv,
-                    "launch_environment": {"platform": "linux-x86_64",
+                    "launch_environment": {"platform": self.arguments.platform_id,
                         "effective_environment": self.frozen_environment("session-wake", 1)}},
                     "correlation": {"version": 1, "transition_nonce": start["activation_nonce"]},
                     "binding": offer["binding"]}
@@ -751,7 +766,7 @@ class Native_case:
     def run(self, delegated):
         process = None
         try:
-            discovered = self.host("launcher-discovery", 1, "discover", {"platform": "linux-x86_64",
+            discovered = self.host("launcher-discovery", 1, "discover", {"platform": self.arguments.platform_id,
                 "ambient_environment": self.frozen_environment("launcher-discovery", 1),
                 "default_home_fallback": str(self.root / "home")}, "discover")
             require(any(row.get("script_body") == "omp" for row in discovered["candidates"]),
@@ -760,7 +775,7 @@ class Native_case:
             request = self.prepare_request(delegated)
             if self.name == "profile":
                 account_request = {"launcher": request["launcher"],
-                    "launch_environment": {"platform": "linux-x86_64",
+                    "launch_environment": {"platform": self.arguments.platform_id,
                         "effective_environment": self.frozen_environment("accounts", 2)},
                     "normalization_directory": str(self.root / "workspace"),
                     "default_home_fallback": str(self.root / "home")}
@@ -792,7 +807,7 @@ class Native_case:
                 environment.update(self.helper_environment())
             command = [str(self.arguments.package / proposal["executable"]), *proposal["argv"]]
             process = subprocess.Popen(command, cwd=self.root / "workspace", env=environment,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix")
             events = queue.Queue()
 
             def read(stream, name):
@@ -806,6 +821,7 @@ class Native_case:
             deadline = time.monotonic() + 45
             eof = set()
             native_frames = []
+            checked_serving_model = False
             selected_failure = None
             failure_request = None
             persistent_stopping = False
@@ -823,6 +839,15 @@ class Native_case:
                     continue
                 inspected, inspection_request = self.inspect(state, data if name == "stdout" else b"",
                                                               data if name == "stderr" else b"")
+                if (self.name == "structured" and name == "stdout" and frame.get("type") == "message_end"
+                        and frame.get("message", {}).get("role") == "assistant"):
+                    model = inspected.get("model_state", {}).get("observation", {})
+                    require(model.get("provider") == frame["message"]["provider"] and
+                            model.get("model") == frame["message"]["model"],
+                            "Structured inspection lost the serving model in the native assistant message")
+                    require(self.host("structured-session", 3, "inspect", inspection_request, "serving-model") == inspected,
+                            "Packaged adapter did not return the native serving model")
+                    checked_serving_model = True
                 if self.name == "fallback-selected" and inspected.get("failure_reason"):
                     require(inspected["failure_reason"] == "omp_native_error",
                             f"Expected the selected model's native refusal, got {inspected}")
@@ -872,6 +897,8 @@ class Native_case:
             require(result.get("complete") and not result.get("failure_reason"), f"Native result failed: {result}")
             require(unchunks(result["result_base64_chunks"]).decode() == ANSWER,
                     "Final SDK result differs from actual assistant output")
+            if self.name == "structured":
+                require(checked_serving_model, "OMP emitted no assistant message establishing the serving model")
             require(self.host("structured-session", 3, "inspect", final_request, "final") == result,
                     "Actual adapter inspect handler differs from its parser result")
             require(any(frame.get("type") == "prompt_result" and frame.get("id") == "lg-prompt" and
@@ -902,7 +929,10 @@ class Native_case:
                     **(observed if self.name in OBSERVATION_SCENARIOS else {})}
         finally:
             if process is not None and process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
+                if os.name == "nt":
+                    process.kill()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
             self.model.close()
             write_json(self.root / "model-requests.json", self.model.requests)
@@ -911,7 +941,9 @@ class Native_case:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime", type=Path, required=True, help="npm prefix with official OMP and Bun")
+    runtime = parser.add_mutually_exclusive_group(required=True)
+    runtime.add_argument("--runtime", type=Path, help="Linux x86-64 npm prefix with official OMP and Bun")
+    runtime.add_argument("--omp", type=Path, help="path to the standalone native omp executable")
     parser.add_argument("--driver", type=Path, required=True, help="built omp_rpc_tests executable")
     parser.add_argument("--package", type=Path, required=True, help="assembled logonomic.cli.omp package")
     parser.add_argument("--host-simulator", type=Path, required=True, help="SDK host simulator executable")
@@ -921,9 +953,19 @@ def main():
         "child", "nested-child", "cwd", "initial-prompt", "wake", "idle-model", "compaction", "helper-custody",
         "fallback-selected", "fallback-preserved", "all"), default="all")
     arguments = parser.parse_args()
-    require(sys.platform == "linux" and platform.machine() == "x86_64",
-            "This native acceptance harness requires Linux x86-64")
-    for name in ("runtime", "driver", "package", "host_simulator", "artifacts"):
+    arguments.platform_id = {("linux", "x86_64"): "linux-x86_64", ("win32", "amd64"): "windows-x86_64",
+        ("darwin", "arm64"): "macos-arm64"}.get((sys.platform, platform.machine().lower()))
+    require(arguments.platform_id, "Unsupported native add-on platform")
+    if arguments.platform_id != "linux-x86_64":
+        require(arguments.omp and arguments.scenario in ("structured", "profile"),
+                "Select the structured or profile pipe scenario and supply the native executable")
+    if arguments.omp is not None:
+        arguments.omp = arguments.omp.resolve(strict=True)
+        require(arguments.omp.name.lower() == ("omp.exe" if os.name == "nt" else "omp"),
+                "The installed executable must use its discoverable omp launcher name")
+    else:
+        arguments.runtime = arguments.runtime.resolve(strict=True)
+    for name in ("driver", "package", "host_simulator", "artifacts"):
         setattr(arguments, name, getattr(arguments, name).resolve())
     if arguments.host_driver is not None:
         arguments.host_driver = arguments.host_driver.resolve()

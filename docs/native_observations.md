@@ -37,7 +37,9 @@ summaries and conversation text are not included.
 
 ## Current execution directory
 
-`execution-context@1` samples the exact `ctx.cwd` at the same native cadence.
+For hosts requesting `execution-context@1`, the adapter samples the exact
+`ctx.cwd` at the same native cadence. Logonomic uses the conversation's
+registered directory and leaves this capability unselected.
 The extension runner reads the owning session manager's live directory; it does
 not use the process-global directory, launch argument, or a tool's per-command
 working directory. Native `/move` changes are therefore visible in the next
@@ -87,6 +89,13 @@ the ID. Clearing or switching the root retires all these bindings. Child model
 facts cannot create child lifecycle, overwrite root context, or complete the
 root's turn. The host independently admits the matching active child and removes
 its live model after departure.
+
+## Structured serving model
+
+In a structured or delegated task, a `model-state@1` inspection reports the
+provider and model from the latest native assistant `message_end` in the
+inspected bytes. A fallback therefore reports the model that served the
+message. A launch option or initial RPC configuration cannot supply that fact.
 
 ## Available native models
 

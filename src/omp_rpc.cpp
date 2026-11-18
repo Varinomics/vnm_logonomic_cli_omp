@@ -3,6 +3,7 @@
 #include "omp_provider.h"
 #include "omp_profiles.h"
 
+#include <logonomic_cli_addon/capability_ids.h>
 #include <logonomic_cli_addon/json_utilities.h>
 #include <logonomic_cli_addon/launcher_utilities.h>
 #include <logonomic_cli_addon/package_source.h>
@@ -346,7 +347,8 @@ void submit_prompt(Rpc_state& state, std::string& input, addon::Structured_inspe
 }
 
 std::optional<addon::Structured_inspect_result> consume_frame(
-    Rpc_state& state, const Json& frame, std::string& input, addon::Structured_inspect_result& result)
+    Rpc_state& state, const Json& frame, std::string& input, addon::Structured_inspect_result& result,
+    std::optional<addon::Structured_model_observation>* serving_model)
 {
     const auto type = json::text(frame, "type");
     if (type.empty() || type == "rpc_chunk") {
@@ -513,6 +515,14 @@ std::optional<addon::Structured_inspect_result> consume_frame(
         const auto& message = json::member(frame, "message");
         if (json::text(message, "role") != "assistant") {
             return std::nullopt;
+        }
+        if (serving_model) {
+            addon::Structured_model_observation sample{
+                json::text(message, "provider"), json::text(message, "model"), "omp.message_end"};
+            const auto* provider = message.find("provider");
+            if ((!provider || provider->is_string()) && addon::is_valid_structured_model_observation(sample)) {
+                *serving_model = std::move(sample);
+            }
         }
         if (!state.selected_model.empty() &&
             json::text(message, "provider") + "/" + json::text(message, "model") != state.selected_model)
@@ -840,7 +850,11 @@ std::optional<addon::Delegated_prepare_result> prepare_delegated_session(
     return result;
 }
 
-addon::Structured_inspect_result inspect_rpc(const addon::Structured_inspection& inspection)
+namespace {
+
+addon::Structured_inspect_result inspect_frames(
+    const addon::Structured_inspection& inspection,
+    std::optional<addon::Structured_model_observation>* serving_model)
 {
     auto restored = load_state(inspection.protocol_state);
     if (!restored) {
@@ -923,7 +937,7 @@ addon::Structured_inspect_result inspect_rpc(const addon::Structured_inspection&
         if (!state.chunk_id.empty()) {
             return failed("omp_protocol_invalid", "OMP interrupted an RPC chunk sequence.");
         }
-        if (auto error = consume_frame(state, *frame, input, result)) {
+        if (auto error = consume_frame(state, *frame, input, result, serving_model)) {
             return *error;
         }
     }
@@ -966,6 +980,20 @@ addon::Structured_inspect_result inspect_rpc(const addon::Structured_inspection&
     return result;
 }
 
+} // namespace
+
+addon::Structured_inspect_result inspect_rpc(const addon::Structured_inspect_request& request)
+{
+    // A later terminal or protocol failure in this inspection does not erase
+    // the model identified by an already-received native assistant message.
+    std::optional<addon::Structured_model_observation> serving_model;
+    auto result = inspect_frames(request.inspection,
+        request.model_state_version == addon::k_model_state_version ? &serving_model : nullptr);
+    result.model_observation = std::move(serving_model);
+    result.model_failure     = request.model_failure;
+    return result;
+}
+
 void handle_structured_session(addon::Invocation_context& context)
 {
     addon::Contract_failure failure;
@@ -989,7 +1017,7 @@ void handle_structured_session(addon::Invocation_context& context)
             context.fail(addon::Result_status::FAILED, failure.reason_code, failure.detail);
             return;
         }
-        context.succeed(addon::encode_structured_inspect_result(inspect_rpc(request->inspection), request->report_failure_diagnostics));
+        context.succeed(addon::encode_structured_inspect_result(inspect_rpc(*request), request->report_failure_diagnostics));
     }
     else {
         context.reject_unknown_operation();

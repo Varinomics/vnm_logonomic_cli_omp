@@ -7,9 +7,11 @@ native CLI performs its ordinary model transport, tool dispatch, extension
 loading, RPC handling and shutdown. This gate is separate from the portable
 SDK conformance and scripted parser/extension tests.
 
-The harness currently requires **Linux x86-64**, Python 3.11 or later, the
-official OMP package, Bun, the assembled add-on, its `omp_rpc_tests` driver and
-the SDK host simulator. The wake scenario also uses `omp_native_host_driver`.
+The harness requires Python 3.11 or later, the assembled add-on, its
+`omp_rpc_tests` driver, the SDK host simulator and an official OMP runtime.
+Windows x86-64 and macOS arm64 can run the pipe-based `structured` and
+`profile` scenarios with a standalone OMP executable. The complete suite
+uses Linux x86-64. The wake scenario also uses `omp_native_host_driver`.
 The inspected native contract is documented in
 [native_contract.md](native_contract.md); the implementation does not impose
 the version used by this acceptance procedure as a compatibility cutoff.
@@ -43,6 +45,11 @@ ctest --test-dir /absolute/path/build --output-on-failure
 
 Run from that same frozen source tree. The evidence directory must be new;
 the harness refuses to overwrite a previous run.
+
+For a standalone installation, use `--omp /path/to/omp` (or the full path
+to `omp.exe` on Windows) in place of `--runtime`. Select one supported
+scenario per run. The harness records the native executable digest,
+prepares an isolated profile, and serves the model endpoint on loopback.
 
 ```sh
 python3 /absolute/path/source/tests/native_acceptance.py \
