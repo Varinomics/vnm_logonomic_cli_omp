@@ -357,6 +357,16 @@ void serving_model_contract(const addon::Structured_prepare_request& request)
     const auto malformed = conversation.send(fallback);
     require(!malformed.model_observation && !malformed.failure_reason,
         "An invalid optional model label leaves the native task usable");
+    addon::Structured_inspect_request timeout;
+    timeout.model_state_version = 1;
+    timeout.inspection.protocol_state = conversation.state();
+    timeout.inspection.stdout_bytes = line(assistant("received before timeout")) + "malformed\n";
+    timeout.inspection.final = true;
+    timeout.inspection.timed_out = true;
+    const auto expired = omp::inspect_rpc(timeout);
+    require(expired.failure_reason == "omp_timed_out" && expired.model_observation &&
+        expired.model_observation->model == "exact-model",
+        "A timed-out final batch retains its received model and the host deadline failure");
     const auto final = conversation.bytes(line(assistant("finished")) + line(prompt_result()), true);
     require(final.result_bytes == "finished" && final.model_observation && final.model_observation->model == "exact-model",
         "A final inspection carries the native assistant model alongside its answer");

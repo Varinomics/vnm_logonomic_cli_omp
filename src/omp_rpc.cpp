@@ -853,17 +853,9 @@ std::optional<addon::Delegated_prepare_result> prepare_delegated_session(
 namespace {
 
 addon::Structured_inspect_result inspect_frames(
-    const addon::Structured_inspection& inspection,
+    Rpc_state& state, const addon::Structured_inspection& inspection,
     std::optional<addon::Structured_model_observation>* serving_model)
 {
-    auto restored = load_state(inspection.protocol_state);
-    if (!restored) {
-        return failed("omp_state_invalid", "The OMP RPC continuation is malformed or exceeds its bounds.");
-    }
-    auto& state = *restored;
-    if (inspection.timed_out) {
-        return failed("omp_timed_out", "The host's OMP task deadline expired.", "process_exit");
-    }
     state.stderr_tail += inspection.stderr_bytes;
     if (state.stderr_tail.size() > k_error_bytes) {
         state.stderr_tail.erase(0, state.stderr_tail.size() - k_error_bytes);
@@ -987,8 +979,23 @@ addon::Structured_inspect_result inspect_rpc(const addon::Structured_inspect_req
     // A later terminal or protocol failure in this inspection does not erase
     // the model identified by an already-received native assistant message.
     std::optional<addon::Structured_model_observation> serving_model;
-    auto result = inspect_frames(request.inspection,
-        request.model_state_version == addon::k_model_state_version ? &serving_model : nullptr);
+    const bool observe_model = request.model_state_version == addon::k_model_state_version;
+    const auto& inspection = request.inspection;
+    auto state = load_state(inspection.protocol_state);
+    addon::Structured_inspect_result result;
+    if (!state) {
+        result = failed("omp_state_invalid", "The OMP RPC continuation is malformed or exceeds its bounds.");
+    }
+    else
+    if (inspection.timed_out) {
+        result = failed("omp_timed_out", "The host's OMP task deadline expired.", "process_exit");
+        if (observe_model && !inspection.stdout_bytes.empty()) {
+            inspect_frames(*state, inspection, &serving_model);
+        }
+    }
+    else {
+        result = inspect_frames(*state, inspection, observe_model ? &serving_model : nullptr);
+    }
     result.model_observation = std::move(serving_model);
     result.model_failure     = request.model_failure;
     return result;

@@ -197,16 +197,13 @@ patch, replace or bypass the lock. The native lock implementation is in
 [linux.rs](https://github.com/can1357/oh-my-pi/blob/7a52f1e35eacc115b067c03a9c8ec7263e114cda/crates/pi-natives/src/file_lock/linux.rs).
 Normal persistence and resume therefore remain outside this gate's evidence.
 
-The native Task path is also affected: even with an in-memory root, OMP leases
-a temporary artifact directory and opens a persisted child session. In this
-workspace that child lock fails before its `started` event. The public bus
-correctly reports preflight/failed records, which the add-on must not promote
-to a running child. The extra small-model call is native task-label generation,
-not a child turn. `child` and `nested-child` remain strict failing acceptance
-requirements here; they are not skipped or reported as passed. Their full
-success gate must run on a host that permits the official native lock. This
-follows `task/structured-subagent.ts` artifact leasing and `task/executor.ts`
-child-session creation in the recorded upstream revision.
+The initial environment also rejected the native Task child-session lock
+before the child's `started` event. A second run on WSL Ubuntu 24.04,
+using ext4 storage, exercised the official lock with OMP 18.22.2 and Bun
+1.4.4. Both `child` and `nested-child` passed with real local-model requests.
+The latter recorded the grandchild's prompt, answer, start, stop, parent and
+depth. The [native resume findings](native_contract.md) cover a separate
+persisted conversation on that environment.
 
 The initial workspace also lacked source-package metadata for its dynamic
 GCC runtime, which the SDK's Linux redistribution step requires. Its local
