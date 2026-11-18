@@ -369,6 +369,36 @@ DWORD set_directory_case(const fs::path& path, bool sensitive)
     CloseHandle(directory);
     return error;
 }
+
+void nested_directory_case_changes(const fs::path& ordinary, const auto& select)
+{
+    const auto parent = ordinary / "middle";
+    const auto upper = parent / "Work";
+    const auto lower = parent / "work";
+    fs::create_directory(parent);
+    require(set_directory_case(parent, false) == ERROR_SUCCESS, "The original nested directory must be case-insensitive");
+    fs::create_directory(upper);
+    require(fs::equivalent(upper, lower), "The original uppercase and lowercase locators must name one native source");
+    const auto original = select(upper);
+
+    fs::remove(upper);
+    fs::remove(parent);
+    fs::create_directory(parent);
+    require(set_directory_case(parent, true) == ERROR_SUCCESS, "The replacement nested directory must be case-sensitive");
+    fs::create_directory(upper);
+    require(fs::create_directory(lower) && !fs::equivalent(upper, lower), "The replacement locators must be distinct native sources");
+    const auto sibling = select(lower);
+    require(sibling.account_key != original.account_key &&
+        !omp::matches_native_account(sibling, {1, original.account_key}) &&
+        !omp::matches_native_account(sibling, {2, original.account_key, addon::path_to_utf8(original.source_profile)}),
+        "Changing a nested directory case policy must not transfer the original Work grant to its new sibling");
+
+    fs::remove(upper);
+    fs::remove(lower);
+    fs::remove(parent);
+    require(!omp::matches_native_account(select(upper), {1, sibling.account_key}),
+        "Removing the nested parent must not admit its lowercase sibling's grant for a prospective uppercase source");
+}
 #endif
 
 void filesystem_account_grants(const char* executable)
@@ -460,6 +490,7 @@ void filesystem_account_grants(const char* executable)
     require(upper.account_key != lower.account_key &&
         omp::matches_native_account(lower, {2, upper.account_key, addon::path_to_utf8(upper.source_profile)}),
         "A current path-bearing grant preserves Unicode aliases inside a mixed-case-mode path");
+    nested_directory_case_changes(first.source_profile, select);
     fs::remove_all(sensitive);
     require(!omp::matches_native_account(select(first.source_profile), {1, old}) &&
         !omp::matches_native_account(select(second.source_profile), {1, old}),
