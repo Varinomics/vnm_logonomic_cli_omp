@@ -89,7 +89,8 @@ Interactive, structured and delegated preparation verify that the selected
 account key belongs to the exact resolved native source. Version 2 additionally
 checks the retained profile path using native directory case rules. A Windows
 grant with a historical key can still select the source identified by its
-retained path. A historical key alone cannot distinguish profiles under a
+retained path when the containing directory's case policy can be established.
+A historical key alone cannot distinguish profiles under a
 case-sensitive directory and requires a new selection. A mismatched grant
 fails with `account_context_mismatch`. Successful results preserve the
 requested account-context version and all fields. Usage scans also verify that

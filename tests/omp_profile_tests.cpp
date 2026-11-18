@@ -398,6 +398,17 @@ void filesystem_account_grants(const char* executable)
     const auto alias = profiles / addon::path_from_utf8("caf\xc3\xa9");
     require(omp::matches_native_account(existing, {2, existing.account_key, addon::path_to_utf8(alias)}),
         "An insensitive Windows directory accepts a native spelling alias in the original grant");
+    // NTFS distinguishes Deseret capital and small long I (U+10400 / U+10428)
+    // in ordinary directories. OMP historically preserved both UTF-8 spellings.
+    const auto capital = select(profiles / addon::path_from_utf8("\xf0\x90\x90\x80"));
+    const auto small = select(profiles / addon::path_from_utf8("\xf0\x90\x90\xa8"));
+    require(fs::create_directory(capital.source_profile) && fs::create_directory(small.source_profile),
+        "The two ordinary NTFS Unicode names must create separate native directories");
+    require(capital.account_key == legacy_key(capital.source_profile) && small.account_key == legacy_key(small.source_profile) &&
+        capital.account_key != small.account_key && select(capital.source_profile).account_key == capital.account_key &&
+        select(small.source_profile).account_key == small.account_key, "The native Unicode pair preserves both historical OMP keys");
+    require(!omp::matches_native_account(small, {2, small.account_key, addon::path_to_utf8(capital.source_profile)}),
+        "A grant must not cross native-distinct Unicode paths in an ordinary NTFS directory");
 #endif
     const auto different = select(profiles / "relocated");
     require(!omp::matches_native_account(different,
@@ -433,6 +444,12 @@ void filesystem_account_grants(const char* executable)
     const addon::Account_context original{2, old, addon::path_to_utf8(first.source_profile)};
     require(omp::matches_native_account(first, original) && !omp::matches_native_account(second, original),
         "A historical path-bearing grant identifies only its original native source");
+    const auto pending = select(sensitive / "missing-parent" / "agent");
+    const addon::Account_context historical{2, legacy_key(pending.source_profile), addon::path_to_utf8(pending.source_profile)};
+    require(!omp::matches_native_account(pending, historical), "An unobserved parent cannot admit a historical folded key");
+    fs::create_directories(pending.source_profile);
+    require(omp::matches_native_account(select(pending.source_profile), historical),
+        "An observable containing directory allows the historical grant for that native locator");
 
     require(set_directory_case(first.source_profile, false) == ERROR_SUCCESS, "Setting the inner directory case mode failed");
     const auto upper = select(first.source_profile / addon::path_from_utf8("Caf\xc3\x89"));

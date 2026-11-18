@@ -429,19 +429,18 @@ void set_failure(addon::Contract_failure* failure, const std::string& reason)
 bool matches_native_account(const Native_profile& profile, const addon::Account_context& grant)
 {
     if (grant.version == 1) return grant.adapter_account_key == profile.account_key;
-    if (grant.version != 2 || !grant.profile_path ||
-        !addon::same_native_account_profile(addon::path_from_utf8(*grant.profile_path), profile.source_profile))
-    {
-        return false;
-    }
+    if (grant.version != 2 || !grant.profile_path) return false;
+    const auto granted = addon::path_from_utf8(*grant.profile_path);
+    if (!addon::same_native_account_profile(granted, profile.source_profile)) return false;
     if (grant.adapter_account_key == profile.account_key) return true;
 #ifdef _WIN32
-    // A path-bearing grant identifies its original source even when its older
-    // key folded case-sensitive siblings together. A key alone cannot do so.
-    if (grant.adapter_account_key == account_key(addon::lower(*grant.profile_path))) return true;
-    const auto identity = addon::native_account_profile_identity(
-        addon::path_from_utf8(*grant.profile_path), addon::Account_profile_case_fold::ASCII);
-    return identity && grant.adapter_account_key == account_key(*identity);
+    // An insensitive non-ASCII variant may retain a different ASCII-folded
+    // digest for the same source, including within a mixed-case-mode path.
+    const auto retained = addon::native_account_profile_identity(granted, addon::Account_profile_case_fold::ASCII);
+    if (retained && grant.adapter_account_key == account_key(*retained)) return true;
+    const auto historical = addon::historical_account_profile_identity(
+        granted, profile.source_profile, addon::Account_profile_case_fold::ASCII);
+    return historical && grant.adapter_account_key == account_key(*historical);
 #else
     return false;
 #endif
