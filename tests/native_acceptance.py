@@ -437,15 +437,24 @@ class Native_case:
         (self.root / f"host-{name}.txt").write_text(result.stdout + result.stderr)
         require(result.returncode == 0, f"SDK host simulator failed: {result.stderr}")
         frames = [json.loads(line[2:]) for line in result.stdout.splitlines() if line.startswith("< ")]
+        if name == "serving-model":
+            pair = {"capability_id": "structured-model-observation", "version": 1}
+            sidecar = self.arguments.package / "capabilities/structured-model-observation@1.json"
+            require(json.loads(sidecar.read_text()) == {**pair, "payload": {}},
+                    "Packaged declaration does not enable structured model observation")
+            require(any(frame.get("type") == "capabilities" and pair in frame["capabilities"] for frame in frames),
+                    "Live adapter did not negotiate structured model observation")
         terminal = next((frame for frame in frames if frame.get("type") == "result"), None)
         require(terminal is not None and terminal.get("status") == "success", f"Adapter rejected {name}: {terminal}")
         return terminal["payload"]
 
     def inspect(self, state, output=b"", error=b"", final=False, exit_code=0, timed_out=False):
-        request = {"purpose": "implementation", "failure_diagnostics": {"version": 1}, "model_state": {"version": 1},
+        request = {"purpose": "implementation", "failure_diagnostics": {"version": 1},
             "inspection": {"protocol_state_base64_chunks": state,
             "stdout_base64_chunks": chunks(output), "stderr_base64_chunks": chunks(error),
             "final": final, "timed_out": timed_out, "exit_code": exit_code}}
+        if self.name == "structured":
+            request["model_state"] = {"version": 1}
         result = subprocess.run([str(self.arguments.driver), "--inspect"], input=json.dumps(request),
             text=True, capture_output=True, timeout=5)
         require(result.returncode == 0, f"Candidate inspection driver failed: {result.stderr}")
@@ -847,6 +856,10 @@ class Native_case:
                             "Structured inspection lost the serving model in the native assistant message")
                     require(self.host("structured-session", 3, "inspect", inspection_request, "serving-model") == inspected,
                             "Packaged adapter did not return the native serving model")
+                    ordinary = {key: value for key, value in inspection_request.items() if key != "model_state"}
+                    require(self.host("structured-session", 3, "inspect", ordinary, "ordinary-inspection") ==
+                            {key: value for key, value in inspected.items() if key != "model_state"},
+                            "An ordinary inspection must keep the same operation and omit the optional observation")
                     checked_serving_model = True
                 if self.name == "fallback-selected" and inspected.get("failure_reason"):
                     require(inspected["failure_reason"] == "omp_native_error",

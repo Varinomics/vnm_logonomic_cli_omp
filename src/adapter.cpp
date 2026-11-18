@@ -87,6 +87,7 @@ int main()
         {"presentation", 1}, {"launcher-discovery", 1}, {"launch-preparation", 3}, {"launcher-approval", 1},
         {"structured-session", 3}, {"delegated-session", 3}, {"delegated-model-selection", 1},
         {"structured-failure-diagnostics", 1},
+        {"structured-model-observation", 1},
         {"managed-assets", 1}, {"lifecycle-events", 2}, {"helper-ingress", 2}, {"attention-kind", 1},
         {"model-context-delivery", 2}, {"coordination-delivery", 1},
         {"context-state", 2}, {"execution-context", 1}, {"model-state", 1}, {"child-state", 1}, {"model-catalog", 1},

@@ -92,10 +92,11 @@ its live model after departure.
 
 ## Structured serving model
 
-In a structured or delegated task, a `model-state@1` inspection reports the
-provider and model from the latest native assistant `message_end` in the
-inspected bytes. A fallback therefore reports the model that served the
-message. A launch option or initial RPC configuration cannot supply that fact.
+In a structured or delegated task, hosts can negotiate
+`structured-model-observation@1` and request the model on a specific RPC
+inspection. The adapter reports the provider and model from the latest native
+assistant `message_end` in those bytes. A fallback therefore reports the model
+that served the message. The interactive model capability is independent.
 
 ## Available native models
 
