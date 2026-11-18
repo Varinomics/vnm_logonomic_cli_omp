@@ -134,6 +134,11 @@ fs::path canonical_profile(const fs::path& path)
     return canonical;
 }
 
+std::string account_key(std::string_view identity)
+{
+    return "omp-profile:" + addon::to_hex(addon::Sha256::digest(identity));
+}
+
 std::string native_comparable_path(const fs::path& path, bool windows)
 {
     // Native normalizePathForComparison resolves only a complete existing
@@ -393,9 +398,9 @@ Native_profile resolve(const addon::Launcher_request& request, const addon::Laun
     }
     check_dotenv(dotenv, cancelled);
     profile.source_profile = canonical_profile(profile.agent != default_agent ? profile.agent : profile.config);
-    auto key_path = addon::path_to_utf8(profile.source_profile);
-    if (windows) key_path = addon::lower(std::move(key_path));
-    profile.account_key = "omp-profile:" + addon::to_hex(addon::Sha256::digest(key_path));
+    const auto identity = addon::native_account_profile_identity(profile.source_profile, addon::Account_profile_case_fold::ASCII);
+    if (!identity) throw Profile_error("native_profile_path_unavailable");
+    profile.account_key = account_key(*identity);
     const auto session_directory = options.session_directory ? options.session_directory : env(environment, "PI_CODING_AGENT_SESSION_DIR");
     const auto relative = [](const std::optional<std::string>& value) {
         return value && !value->empty() && !addon::path_from_utf8(*value).is_absolute();
@@ -420,6 +425,27 @@ void set_failure(addon::Contract_failure* failure, const std::string& reason)
 }
 
 } // namespace
+
+bool matches_native_account(const Native_profile& profile, const addon::Account_context& grant)
+{
+    if (grant.version == 1) return grant.adapter_account_key == profile.account_key;
+    if (grant.version != 2 || !grant.profile_path ||
+        !addon::same_native_account_profile(addon::path_from_utf8(*grant.profile_path), profile.source_profile))
+    {
+        return false;
+    }
+    if (grant.adapter_account_key == profile.account_key) return true;
+#ifdef _WIN32
+    // A path-bearing grant identifies its original source even when its older
+    // key folded case-sensitive siblings together. A key alone cannot do so.
+    if (grant.adapter_account_key == account_key(addon::lower(*grant.profile_path))) return true;
+    const auto identity = addon::native_account_profile_identity(
+        addon::path_from_utf8(*grant.profile_path), addon::Account_profile_case_fold::ASCII);
+    return identity && grant.adapter_account_key == account_key(*identity);
+#else
+    return false;
+#endif
+}
 
 std::optional<Native_profile> resolve_native_profile(const addon::Launcher_request& launcher,
     const addon::Launch_environment& environment, std::string_view normalization_directory,
@@ -453,9 +479,7 @@ bool validate_account(const Request& request, bool node_env_declared,
     const auto profile = resolve_native_profile(request.launcher, *request.launch_environment,
         request.working_directory, {}, request.launcher_argv, cancelled, failure, node_env_declared);
     if (!profile) return false;
-    const auto& account = *request.account_context;
-    if (account.adapter_account_key != profile->account_key ||
-        (account.version == 2 && account.profile_path != addon::path_to_utf8(profile->source_profile))) {
+    if (!matches_native_account(*profile, *request.account_context)) {
         set_failure(failure, "account_context_mismatch");
         return false;
     }

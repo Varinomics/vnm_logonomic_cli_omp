@@ -13,7 +13,9 @@ An overflow or inaccessible inventory fails explicitly; it never returns a
 truncated list as though it were complete. Resolution selects the same stable
 key that discovery supplies.
 
-The key is a non-secret digest of the canonical native source path. The SDK's
+The key is a non-secret digest of the canonical native source path. On Windows,
+its input preserves case within case-sensitive directories. Ordinary Windows
+directories retain OMP's historical ASCII-folded keys. The SDK's
 `account_display_name(profile_path)` supplies the folder-based display name.
 An existing directory is available, a non-directory source is unavailable, and
 a native selectable directory that has not been created is unknown. These
@@ -85,9 +87,13 @@ also unavailable because the request does not contain native per-drive state.
 
 Interactive, structured and delegated preparation verify that the selected
 account key belongs to the exact resolved native source. Version 2 additionally
-checks the exact canonical profile path. A mismatch fails with
-`account_context_mismatch` instead of echoing a different account. Successful
-results preserve the requested account-context version and all fields.
+checks the retained profile path using native directory case rules. A Windows
+grant with a historical key can still select the source identified by its
+retained path. A historical key alone cannot distinguish profiles under a
+case-sensitive directory and requires a new selection. A mismatched grant
+fails with `account_context_mismatch`. Successful results preserve the
+requested account-context version and all fields. Usage scans also verify that
+the retained ledger belongs to the selected native source.
 
 This does not rewrite native credential storage, force a sign-in, or change the
 launcher's model, approval policy or profile arguments. An operation without a

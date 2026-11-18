@@ -13,6 +13,10 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace {
 namespace addon = logonomic::cli_addon;
 namespace json = addon::json;
@@ -352,6 +356,93 @@ void inventory_and_acknowledgments(const char* executable)
         "SDK inventory overflow fails instead of dropping selected or older profiles");
 }
 
+#ifdef _WIN32
+DWORD set_directory_case(const fs::path& path, bool sensitive)
+{
+    const HANDLE directory = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    require(directory != INVALID_HANDLE_VALUE, "The profile fixture directory could not be opened");
+    FILE_CASE_SENSITIVE_INFO info{};
+    if (sensitive) info.Flags = FILE_CS_FLAG_CASE_SENSITIVE_DIR;
+    const BOOL set = SetFileInformationByHandle(directory, FileCaseSensitiveInfo, &info, sizeof(info));
+    const DWORD error = set ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(directory);
+    return error;
+}
+#endif
+
+void filesystem_account_grants(const char* executable)
+{
+    Fixture fixture(executable);
+    const auto profiles = fixture.root / "profiles";
+    fs::create_directory(profiles);
+    const auto select = [&](const fs::path& profile) {
+        fixture.set("PI_CODING_AGENT_DIR", addon::path_to_utf8(profile));
+        return fixture.profile();
+    };
+    const auto legacy_key = [](const fs::path& source) {
+        auto path = addon::path_to_utf8(source);
+#ifdef _WIN32
+        for (char& c : path) {
+            if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+        }
+#endif
+        return "omp-profile:" + addon::to_hex(addon::Sha256::digest(path));
+    };
+    const auto ordinary = select(profiles / addon::path_from_utf8("Caf\xc3\x89"));
+    require(ordinary.account_key == legacy_key(ordinary.source_profile), "An ordinary profile retains its historical key");
+    fs::create_directory(ordinary.source_profile);
+    const auto existing = select(ordinary.source_profile);
+    require(existing.account_key == ordinary.account_key, "Creating a selected profile preserves its identity");
+#ifdef _WIN32
+    const auto alias = profiles / addon::path_from_utf8("caf\xc3\xa9");
+    require(omp::matches_native_account(existing, {2, existing.account_key, addon::path_to_utf8(alias)}),
+        "An insensitive Windows directory accepts a native spelling alias in the original grant");
+#endif
+    const auto different = select(profiles / "relocated");
+    require(!omp::matches_native_account(different,
+        {2, existing.account_key, addon::path_to_utf8(existing.source_profile)}), "A grant cannot follow a different source");
+
+    const auto sensitive = fixture.root / "sensitive";
+    fs::create_directory(sensitive);
+#ifdef _WIN32
+    const auto error = set_directory_case(sensitive, true);
+    if (error == ERROR_ACCESS_DENIED || error == ERROR_NOT_SUPPORTED ||
+        error == ERROR_INVALID_PARAMETER || error == ERROR_PRIVILEGE_NOT_HELD) {
+        std::printf("SKIP case-sensitive source profiles on this volume (Windows error %lu)\n", error);
+        return;
+    }
+    require(error == ERROR_SUCCESS, "Setting the native profile fixture case mode failed");
+#endif
+    const auto first = select(sensitive / "Account");
+    const auto second = select(sensitive / "account");
+    fs::create_directory(first.source_profile);
+    if (!fs::create_directory(second.source_profile)) {
+        std::puts("SKIP distinct native profile directories on this volume");
+        return;
+    }
+    require(first.account_key != second.account_key && select(first.source_profile).account_key == first.account_key &&
+        select(second.source_profile).account_key == second.account_key,
+        "Distinct selectable source profiles keep separate keys before and after directory creation");
+    require(!omp::matches_native_account(second, {2, first.account_key, addon::path_to_utf8(first.source_profile)}),
+        "A case-sensitive sibling cannot use another source's grant");
+#ifdef _WIN32
+    const auto old = legacy_key(first.source_profile);
+    require(!omp::matches_native_account(first, {1, old}) && !omp::matches_native_account(second, {1, old}),
+        "A historical folded key alone cannot select a case-sensitive sibling");
+    const addon::Account_context original{2, old, addon::path_to_utf8(first.source_profile)};
+    require(omp::matches_native_account(first, original) && !omp::matches_native_account(second, original),
+        "A historical path-bearing grant identifies only its original native source");
+
+    require(set_directory_case(first.source_profile, false) == ERROR_SUCCESS, "Setting the inner directory case mode failed");
+    const auto upper = select(first.source_profile / addon::path_from_utf8("Caf\xc3\x89"));
+    const auto lower = select(first.source_profile / addon::path_from_utf8("caf\xc3\xa9"));
+    require(upper.account_key != lower.account_key &&
+        omp::matches_native_account(lower, {2, upper.account_key, addon::path_to_utf8(upper.source_profile)}),
+        "A current path-bearing grant preserves Unicode aliases inside a mixed-case-mode path");
+#endif
+}
+
 } // namespace
 
 int main(int, char** argv)
@@ -362,6 +453,7 @@ int main(int, char** argv)
         implicit_home_working_directory(argv[0]);
         xdg_and_environment(argv[0]);
         inventory_and_acknowledgments(argv[0]);
+        filesystem_account_grants(argv[0]);
         std::puts("PASS native source profiles, SDK accounts and selected-context acknowledgments");
         return 0;
     }

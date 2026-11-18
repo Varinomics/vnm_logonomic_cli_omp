@@ -452,7 +452,14 @@ void read_retained(const addon::Usage_scan_request& request, const Native_profil
         [&](const Json& record, addon::Contract_failure*) {
             progress.check();
             if (!owner) {
-                if (record != cache_owner(profile)) throw Usage_error("usage_cache_owner_mismatch");
+                if (!json::exact_keys(record, {"type", "version", "source_profile", "account_key"}) ||
+                    json::text(record, "type") != "omp-native-usage-owner" ||
+                    json::member(record, "version") != Json(1) ||
+                    !matches_native_account(profile,
+                        {2, json::text(record, "account_key"), json::text(record, "source_profile")}))
+                {
+                    throw Usage_error("usage_cache_owner_mismatch");
+                }
                 owner = true;
             }
             else {
@@ -511,8 +518,7 @@ std::shared_ptr<Snapshot> build_snapshot(const addon::Usage_scan_request& reques
     const auto profile = resolve_native_profile(context.launcher, *context.launch_environment,
         context.working_directory, {}, context.launcher_argv, [&] { return progress.cancelled(); }, &failure);
     if (!profile) throw Usage_error(failure.reason_code);
-    if (context.account_context && (context.account_context->adapter_account_key != profile->account_key ||
-        (context.account_context->version == 2 && context.account_context->profile_path != addon::path_to_utf8(profile->source_profile))))
+    if (context.account_context && !matches_native_account(*profile, *context.account_context))
         throw Usage_error("account_context_mismatch");
     if (!addon::validate_usage_cache_allocation(selection.candidate_root, context.profile_storage->root, &failure))
         throw Usage_error(failure.reason_code);

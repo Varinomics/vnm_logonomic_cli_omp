@@ -27,6 +27,8 @@ struct Native_profile
     std::string account_key;
 };
 
+bool matches_native_account(const Native_profile& profile, const logonomic::cli_addon::Account_context& grant);
+
 // Resolves only the native paths justified by this frozen literal invocation.
 // It performs read-only directory checks, never imports credential values or
 // evaluates dotenv/extension code, and never uses the adapter's own environment.

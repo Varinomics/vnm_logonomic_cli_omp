@@ -230,6 +230,29 @@ void native_sources_and_copies(const char* executable)
     require(expanded.records.size() == 5 && total(expanded) == 135, "The native exact-file registry includes its nested child storage");
 }
 
+void retained_profile_identity(const char* executable)
+{
+    Fixture f(executable);
+    auto& environment = f.request.context.launch_environment->effective_environment;
+    const auto upper = f.home / addon::path_from_utf8("Caf\xc3\x89");
+    const auto lower = f.home / addon::path_from_utf8("caf\xc3\xa9");
+    environment.set("PI_CODING_AGENT_DIR", Json(addon::path_to_utf8(upper)));
+    environment.set("PI_CODING_AGENT_SESSION_DIR", Json(addon::path_to_utf8(f.sources)));
+    f.select_account();
+    const auto source = f.sources / "retained.jsonl";
+    write(source, {header("original"), assistant("11111111", 20)});
+    const auto page = f.scan();
+    require(total(page) == 20, "The original native source must contribute one usage record");
+    fs::remove(source);
+    f.next(page.cache_candidate);
+    environment.set("PI_CODING_AGENT_DIR", Json(addon::path_to_utf8(lower)));
+#ifdef _WIN32
+    require(total(f.scan()) == 20, "A Windows spelling alias must retain the original account grant and ledger evidence");
+#else
+    require(f.invoke().reason == "account_context_mismatch", "A different POSIX account path cannot acquire retained usage");
+#endif
+}
+
 void exact_source_locators(const char* executable)
 {
     for (const auto* name : {"work", "work.history", "caf\xc3\xa9.record"}) {
@@ -411,6 +434,8 @@ int main(int, char** argv)
     const char* group = "native sources and copies";
     try {
         native_sources_and_copies(argv[0]);
+        group = "retained profile identity";
+        retained_profile_identity(argv[0]);
         group = "exact native source locators";
         exact_source_locators(argv[0]);
         group = "discard and retention";
