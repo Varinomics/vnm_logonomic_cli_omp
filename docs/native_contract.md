@@ -83,7 +83,7 @@ the package does not replace that policy to manufacture a fresh-message promise.
 | `session_branch`, `session_tree` | New activation | Context rewinds cannot reuse the previous activation's model context or child state. |
 | `session_shutdown` | Session ended | Only for the root binding; never claims successful work. |
 | `agent_start` | Confirmed working phase | Creates a provider turn id. Automatic continuation retains that id. |
-| Terminal `agent_end` | Confirmed awaiting-input phase | Requires the native emitter's own `willContinue` field with value undefined/false. The callback can precede prompt unwinding. |
+| Terminal `agent_end` | Confirmed awaiting-input phase | A paused loop carries `willContinue: true`; a terminal event may omit the marker or set it to false. The callback can precede prompt unwinding. |
 | Terminal assistant `stopReason: stop` | Confirmed success | `error` means failed; `aborted` means interrupted. Length/tool-use/unknown endings do not establish successful work. |
 | `session_stop` | No observation | This is an awaited veto/continuation gate. Returning from the gate is not completion. |
 | `tool_approval_requested` and `tool_approval_resolved` | Paired confirmed permission attention | Exact native session id and tool-call id. A rejected approval still resolves the wait. |
@@ -108,13 +108,10 @@ also lack public paired observation events and are not included in attention
 coverage. Child-local permission/question dialogs are not promoted to root
 attention.
 
-The verified native emitter includes the `willContinue` property even when
-its value is undefined. A runtime event that omits the property has not
-established those continuation semantics; the extension reports SDK lifecycle
-degradation instead of inferring a successful finish. An extension context
-without `agent.kind` cannot establish a root activation. These checks avoid
-rejecting a compatible release merely because it is older than the inspected
-source version.
+The native extension mirror maps a paused loop to `agent_end` with
+`willContinue: true` and a finished run to an ordinary `agent_end`. A
+malformed continuation marker degrades lifecycle observation. The extension
+requires an identified main agent before attributing either event to the root.
 
 Native `ctx.isIdle()` is not a terminal-event condition. Its underlying
 `isStreaming` getter includes the owning prompt's in-flight counter, which

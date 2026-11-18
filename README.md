@@ -66,10 +66,9 @@ The child feature covers immediate task-tool and eval `agent()` children on the
 public session bus. With `child-state@1`, admitted direct-child progress can
 also carry bounded nested Task snapshots with real execution evidence and
 parent/depth relationships. This does not promise a complete descendant tree,
-`/tan` clones, advisor activity, or child-local dialogs. The real Task acceptance
-test remains blocked in the current Linux workspace by OMP's native child-file
-lock; contract fixtures establish the mappings without claiming a successful
-native child run here.
+`/tan` clones, advisor activity, or child-local dialogs. Native Linux x86-64
+acceptance exercised one direct Task child and a second Task with a grandchild
+using OMP 18.22.2 and a local model on ext4.
 Generic dialogs from other extensions have no paired native observation
 surface and are not covered. The package never uses the native `session_stop`
 veto gate as a completed-turn signal.

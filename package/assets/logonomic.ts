@@ -424,22 +424,23 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
     pi.on("agent_end", (event, ctx) => {
         const owner = current(ctx);
         if (!owner?.turnId) return;
-        if (!Object.hasOwn(event, "willContinue")) {
-            // The verified native emitter includes this field even when its
-            // value is undefined. Missing semantic evidence is not success.
+        if (event.willContinue === true) return;
+        if (event.willContinue !== undefined && event.willContinue !== false) {
             owner.lost = true;
             void send(owner, "logonomic_observation_lost");
             return;
         }
-        if (event.willContinue === true ||
-            (event.willContinue !== undefined && event.willContinue !== false)) return;
-        // The native contract treats undefined/false willContinue as terminal.
+        // The native extension mirror marks a paused loop with willContinue;
+        // a terminal agent_end can omit that optional property entirely.
         // ctx.isIdle() can still be false while the owning prompt unwinds;
         // this notification is not repeated when that counter reaches zero.
         // session_stop is a veto gate and is deliberately never observed here.
         const last = [...event.messages].reverse().find(message => message.role === "assistant");
         const reason = last && "stopReason" in last && typeof last.stopReason === "string" ? last.stopReason : "";
         owner.interrupted = reason === "aborted";
+        // The terminal snapshot supersedes queued root message samples. A slower
+        // optional delivery must not consume the remaining native shutdown window.
+        latestSamples.delete("message_end:");
         void send(owner, "agent_end", { ...snapshot(ctx), terminal: true, stop_reason: reason });
         owner.turnId = "";
         observeCatalog(owner, ctx);
@@ -531,15 +532,16 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         const child = children.get(event.id);
         if (!child || child.sessionFile !== event.sessionFile || child.parentToolCallId !== event.parentToolCallId ||
             !["started", "completed", "failed", "aborted"].includes(event.status)) return;
-        if (event.status !== "started") {
-            child.active = false;
-            if (!child.owner.childState) children.delete(event.id);
-        }
+        const id = event.id;
+        const stopped = event.status !== "started";
+        if (stopped) child.active = false;
         void send(child.owner, "task:subagent:lifecycle", { agent_id: event.id, status: event.status,
             ...(identity(event.agent, 160) ? { agent_label: event.agent } : {}),
             ...(child.owner.childState ? { child: childFacts(childState(event.status), "", 1, event.description) } : {}) },
             !child.owner.childState).then(accepted => {
-                if (!accepted && children.get(event.id as string) === child) loseChildren(child.owner, "child_delivery_lost");
+                if (children.get(id) !== child) return;
+                if (!accepted) loseChildren(child.owner, "child_delivery_lost");
+                if (stopped && !child.owner.childState) children.delete(id);
             });
     });
     const unsubscribeProgress = pi.events.on("task:subagent:progress", (value: unknown) => {
@@ -562,10 +564,10 @@ export function installExtension(pi: ExtensionAPI, transport: Transport = invoke
         if (signature === (child.pendingModel ?? child.modelSnapshot)) return;
         child.pendingModel = signature;
         const id = progress.id;
-        // A captured old child's queued sample cannot acquire authority over a
-        // replacement which reused its display id before helper dispatch.
+        // Progress captured before the matching stop keeps its place in the
+        // queue. A replacement which reuses the display id has a distinct binding.
         void send(child.owner, "task:subagent:progress", extra, false,
-            () => children.get(id) === child && child.active).then(accepted => {
+            () => children.get(id) === child).then(accepted => {
                 if (accepted) child.modelSnapshot = signature;
                 if (child.pendingModel === signature) child.pendingModel = undefined;
             });

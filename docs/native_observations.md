@@ -164,12 +164,11 @@ execution evidence, independent child context occupancy, or child messaging and
 control. No private whole-tree event bus or transcript parsing is used.
 
 The contract fixtures cover direct and nested state projection, source binding,
-loss, and SDK admission. In the current native acceptance environment, Task
-creation reaches the public bus but fails its temporary child-session file lock
-with `EPERM` before a started event. Root `--no-session` runs pass. Successful
-end-to-end native child execution remains unqualified until that native platform
-boundary is exercised in a supported environment; fixture coverage is not
-reported as that acceptance result.
+loss, and SDK admission. On Linux x86-64 with an ext4 session directory, OMP
+18.22.2 ran both the `child` and `nested-child` native acceptance scenarios
+against a local model. The package observed both generations start and stop
+and reported the grandchild's native parent and depth. The harness also
+checked the prompts and answers from the child and grandchild requests.
 
 ## Source evidence
 

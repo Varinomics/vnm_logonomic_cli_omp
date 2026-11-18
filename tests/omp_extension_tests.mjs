@@ -61,7 +61,7 @@ await h.emit("agent_end", { willContinue: true, messages: [{ role: "assistant", 
 assert.equal(h.delivered.at(-1).name, "agent_start", "continuations retain busy state");
 await h.emit("agent_start");
 assert.equal(h.delivered.at(-1).body.turn_id, turn);
-await h.emit("agent_end", { willContinue: undefined, messages: [{ role: "assistant", stopReason: "stop" }] });
+await h.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
 assert.equal(h.delivered.at(-1).name, "agent_end", "the single native terminal notification survives prompt unwinding");
 assert.equal(h.delivered.at(-1).body.turn_id, turn);
 assert.equal(h.delivered.at(-1).body.stop_reason, "stop");
@@ -151,9 +151,9 @@ assert.equal(failed.delivered.length, losses, "after admitted delivery loss the 
 const unknownSemantics = harness();
 await unknownSemantics.emit("session_start");
 await unknownSemantics.emit("agent_start");
-await unknownSemantics.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
+await unknownSemantics.emit("agent_end", { willContinue: "paused", messages: [{ role: "assistant", stopReason: "stop" }] });
 assert.equal(unknownSemantics.delivered.at(-1).name, "logonomic_observation_lost",
-    "an older event shape without native continuation evidence must never imply successful completion");
+    "a malformed continuation marker cannot establish a terminal outcome");
 
 let releaseStart;
 let startAborted = false;
@@ -165,6 +165,8 @@ const closing = harness((request, signal) => request.name === "agent_start" ?
 await closing.emit("session_start");
 await closing.emit("agent_start");
 closing.state.idle = false;
+await closing.emit("message_end", { message: { role: "assistant" } });
+closing.state.cwd = "/terminal-snapshot";
 await closing.emit("agent_end", { willContinue: undefined, messages: [{ role: "assistant", stopReason: "stop" }] });
 const shutdown = closing.emit("session_shutdown");
 await closing.drain();
@@ -175,6 +177,8 @@ assert.deepEqual(closing.delivered.map(request => request.name),
     ["session_start", "agent_start", "agent_end", "session_shutdown"],
     "fire-and-forget native terminal notification drains before session shutdown under immediate EOF");
 assert.equal(closing.delivered[1].body.turn_id, closing.delivered[2].body.turn_id);
+assert.equal(closing.delivered[2].body.execution.cwd, "/terminal-snapshot",
+    "the terminal snapshot supersedes a queued assistant-message sample before shutdown");
 
 const telemetry = harness();
 await telemetry.emit("session_start");
@@ -238,6 +242,17 @@ const progressA = { ...childA, progress: { id: childA.id,
     resolvedModel: "ambiguous/display:high", modelOverride: "requested-alias",
     resolvedModelIdentity: "actual-provider/model/route:literal", resolvedThinkingLevel: "medium",
     currentToolArgs: "private arguments", recentOutput: ["private output"] } };
+for (const negotiateChildren of [false, true]) {
+    const shortChild = harness(undefined, negotiateChildren);
+    await shortChild.emit("session_start");
+    shortChild.child({ ...childA, status: "started" });
+    shortChild.progress(progressA);
+    shortChild.child({ ...childA, status: "completed" });
+    await shortChild.drain();
+    assert.deepEqual(shortChild.delivered.slice(1).map(row => row.body.model?.model ?? row.body.status),
+        ["started", "model/route:literal", "completed"],
+        "a fast child retains the observed serving model between its admitted start and stop");
+}
 models.progress(progressA);
 await models.drain();
 assert.equal(models.delivered.at(-1).name, "agent_end", "progress cannot create an unadmitted native child");
@@ -311,7 +326,7 @@ const concurrentLoss = harness(request => request.name === "message_end" ?
 await concurrentLoss.emit("session_start");
 await concurrentLoss.emit("agent_start");
 await concurrentLoss.emit("message_end", { message: { role: "assistant" } });
-concurrentLoss.handlers.get("agent_end")({ type: "agent_end", messages: [] }, concurrentLoss.ctx);
+concurrentLoss.handlers.get("agent_end")({ type: "agent_end", willContinue: "paused", messages: [] }, concurrentLoss.ctx);
 releaseBeforeLoss({ committed: true, accepted: true });
 await concurrentLoss.drain();
 assert.deepEqual(concurrentLoss.delivered.map(request => request.name),

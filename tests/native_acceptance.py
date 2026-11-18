@@ -61,7 +61,8 @@ def write_json(path, value):
 
 
 def record_metadata(arguments):
-    files = {"harness": Path(__file__), "driver": arguments.driver,
+    files = {"harness": Path(__file__), "wrapper": Path(__file__).with_name("native_acceptance_wrapper.py"),
+        "driver": arguments.driver,
         "host_simulator": arguments.host_simulator}
     native = {}
     if arguments.omp is not None:
@@ -121,24 +122,6 @@ def relay_fixture():
                                   "error": {"code": -32601, "message": "Unknown fixture method"}}), flush=True)
                 continue
             print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
-
-
-def wrapper_fixture():
-    descriptor = json.loads(Path(sys.argv[2]).read_text())
-    arguments = sys.argv[3:]
-    body = json.loads(sys.stdin.read()) if "--args-stdin" in arguments else None
-    with Path(descriptor["log"]).open("a", encoding="utf8") as log:
-        log.write(json.dumps({"argv": arguments, "body": body, "pid": os.getpid()}) + "\n")
-    if descriptor.get("stall"):
-        time.sleep(60)
-        return
-    if arguments[0] == "request-title-instruction":
-        result = {"accepted": True, "instruction_required": True, "instruction": HOST_CONTEXT}
-    else:
-        result = {"accepted": True, "epoch": 1}
-        if descriptor.get("children"):
-            result["helper_response"] = {"child_state_version": 1}
-    print(json.dumps(result), flush=True)
 
 
 class Local_model:
@@ -328,11 +311,11 @@ class Native_case:
 
     def helper_environment(self, name="wrapper", stall=False):
         descriptor = self.root / f"{name}-descriptor.json"
-        write_json(descriptor, {"log": str(self.root / f"{name}.jsonl"), "stall": stall,
+        write_json(descriptor, {"log": str(self.root / f"{name}.jsonl"), "stall": stall, "instruction": HOST_CONTEXT,
                                "children": self.name in ("child", "nested-child")})
         wrapper = self.root / "bin" / name
-        wrapper.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
-            f"{shlex.quote(str(Path(__file__).resolve()))} --wrapper-fixture "
+        script = Path(__file__).resolve().with_name("native_acceptance_wrapper.py")
+        wrapper.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -S {shlex.quote(str(script))} "
             f"{shlex.quote(str(descriptor))} \"$@\"\n")
         wrapper.chmod(0o755)
         return {"LOGONOMIC_VNMCTL_PATH": str(wrapper), "LOGONOMIC_SESSION_CAPABILITY": "a" * 64,
@@ -875,6 +858,13 @@ class Native_case:
                     process.stdin.write(pending)
                     process.stdin.flush()
                 if inspected.get("close_stdin"):
+                    if self.name in OBSERVATION_SCENARIOS:
+                        # The RPC turn can settle before the interactive extension's
+                        # asynchronous terminal callback has reached the host.
+                        while not any(event["name"] == "agent_end" for event in self.delivered_events()):
+                            require(process.poll() is None and time.monotonic() < deadline,
+                                    "Interactive terminal observation never reached the host")
+                            time.sleep(0.05)
                     process.stdin.close()
                 if self.name == "persistent" and name == "stdout" and frame.get("type") == "prompt_result":
                     require(frame.get("sessionSettled") is False and not inspected.get("close_stdin"),
@@ -1010,7 +1000,5 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--relay-fixture":
         relay_fixture()
-    elif len(sys.argv) > 1 and sys.argv[1] == "--wrapper-fixture":
-        wrapper_fixture()
     else:
         main()
