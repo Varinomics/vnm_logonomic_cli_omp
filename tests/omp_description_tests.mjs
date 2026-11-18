@@ -35,6 +35,12 @@ assert.equal(calls.length, 1);
 answer = id => ({ committed: true, accepted: true,
     description: { version: 1, request_id: id, accepted: false, reason: "already_assigned" } });
 assert.equal((await execute("refused", title)).details.disposition, "refused");
+answer = id => ({ committed: true, accepted: true,
+    description: { version: 1, request_id: id, accepted: false, reason: "summary_recorded_title_unavailable" } });
+const partial = await execute("partial", { kind: "summary", summary: "Revised parser", title: "Parser" });
+assert.equal(partial.details.disposition, "refused");
+assert.equal(partial.details.reason, "summary_recorded_title_unavailable");
+assert.match(partial.content[0].text, /recorded the summary but could not save its title/u);
 answer = () => ({ committed: true, accepted: true });
 const uncertain = await execute("unknown", { kind: "summary_unchanged" });
 assert.equal(uncertain.details.disposition, "uncertain", "Carrier acceptance cannot stand in for a host policy receipt");

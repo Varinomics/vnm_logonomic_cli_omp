@@ -19,6 +19,7 @@ const reason = (value: unknown): value is string => typeof value === "string" &&
 function result(disposition: Details["disposition"], code: string): AgentToolResult<Details> {
     const message = disposition === "accepted" ? "Logonomic recorded the session description." :
         disposition === "uncertain" ? "The host may have recorded this submission. Do not retry it automatically." :
+        code === "summary_recorded_title_unavailable" ? "Logonomic recorded the summary but could not save its title." :
         `Logonomic did not record this submission: ${code}.`;
     return { content: [{ type: "text", text: message }],
         details: { accepted: disposition === "accepted", disposition, reason: code } };
