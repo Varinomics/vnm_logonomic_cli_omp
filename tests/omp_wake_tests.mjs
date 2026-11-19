@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync,
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync,
     symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -21,7 +21,7 @@ const prepare = { launcher: { script_body: program, runner_key: "direct", enviro
     launcher_argv: [program], working_directory: root, title_instruction: "",
     declared_assets: ["assets/logonomic.ts", "assets/native_children.ts", "assets/native_wake.ts"],
     launch_environment: { platform, effective_environment: { PATH: dirname(program) } },
-    profile_storage: { version: 1, root: profile }, session_wake: { version: 1 } };
+    profile_storage: { version: 1, root: realpathSync.native(profile) }, session_wake: { version: 1 } };
 
 async function invoke(operation, payload, cancelAfter) {
     return await new Promise((resolve, reject) => {
