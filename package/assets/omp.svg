@@ -1,3 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <path fill="currentColor" d="M12 17h40v7h-8v24h-8V24H26c0 12-2 19-7 26l-7-4c5-6 7-12 7-22h-7z"/>
+  <defs>
+    <linearGradient id="omp-mark-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F84FCC"/>
+      <stop offset="0.5" stop-color="#9362F4"/>
+      <stop offset="1" stop-color="#00DBE4"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#omp-mark-gradient)" d="M10 14h44v9H43v33h-9V23h-9v22h-9V23H10z"/>
 </svg>

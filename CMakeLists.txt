@@ -73,7 +73,8 @@ logonomic_cli_addon_package_platform(OMP_PLATFORM)
 set(OMP_EXECUTABLE_SUFFIX "${CMAKE_EXECUTABLE_SUFFIX}")
 configure_file(package/logonomic-cli-addon.json.in generated/logonomic-cli-addon.json @ONLY)
 logonomic_cli_addon_add_package(omp_package logonomic.cli.omp OMP_PACKAGE_DIRECTORY
-    ADAPTER omp_adapter HELPERS omp_launch_bridge omp_review_bridge omp_helper)
+    ADAPTER omp_adapter HELPERS omp_launch_bridge omp_review_bridge omp_helper
+    INDEX_ARGUMENTS --third-party assets/omp.svg notices/omp-mark.txt provenance/omp-mark.json)
 
 if(LOGONOMIC_CLI_ADDON_EMBEDDED)
     return()

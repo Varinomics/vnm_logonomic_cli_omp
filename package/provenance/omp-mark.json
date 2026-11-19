@@ -1,0 +1,12 @@
+{
+  "source": "https://omp.sh/",
+  "source_location": "Inline SVG in the site header link labeled omp",
+  "source_sha256": "ef0b6ce5e981884234a1dccd8cd7ad1050f68ea4b53422f0719730571e5cc85d",
+  "notice": "notices/omp-mark.txt",
+  "resources": ["assets/omp.svg"],
+  "changes": [
+    "Preserved the transparent canvas, viewBox, path data, gradient direction, and stops.",
+    "Converted OKLCH stop colors to sRGB for Qt SVG rendering.",
+    "Removed browser layout and accessibility attributes and added the SVG namespace."
+  ]
+}

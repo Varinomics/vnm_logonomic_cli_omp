@@ -1,0 +1,4 @@
+oh-my-pi header mark sourced from https://omp.sh/.
+Copyright 2026 Stencil Labs, Inc.
+
+The mark identifies the oh-my-pi integration.
