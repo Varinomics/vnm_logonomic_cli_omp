@@ -72,7 +72,8 @@ public:
     explicit Temporary_directory(const char* executable)
     {
         const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-        m_path = std::filesystem::temp_directory_path() / addon::path_from_utf8("omp rpc test \xc3\xa9 " + std::to_string(nonce));
+        const auto temp = std::filesystem::canonical(std::filesystem::temp_directory_path());
+        m_path = temp / addon::path_from_utf8("omp rpc test \xc3\xa9 " + std::to_string(nonce));
         std::filesystem::create_directory(m_path);
 #ifdef _WIN32
         m_program = m_path / "omp.exe";

@@ -209,7 +209,8 @@ class Temporary_program
 public:
     explicit Temporary_program(const char* executable)
     {
-        m_directory = std::filesystem::temp_directory_path() / ("omp launch test " + addon::random_nonce_hex());
+        const auto temp = std::filesystem::canonical(std::filesystem::temp_directory_path());
+        m_directory = temp / ("omp launch test " + addon::random_nonce_hex());
         std::filesystem::create_directory(m_directory);
 #ifdef _WIN32
         m_program = m_directory / "omp.exe";

@@ -426,7 +426,7 @@ void filesystem_account_grants(const char* executable)
     const auto existing = select(ordinary.source_profile);
     require(existing.account_key == ordinary.account_key, "Creating a selected profile preserves its identity");
 #ifdef _WIN32
-    const auto alias = profiles / addon::path_from_utf8("caf\xc3\xa9");
+    const auto alias = existing.source_profile.parent_path() / addon::path_from_utf8("caf\xc3\xa9");
     require(omp::matches_native_account(existing, {2, existing.account_key, addon::path_to_utf8(alias)}),
         "An insensitive Windows directory accepts a native spelling alias in the original grant");
     // NTFS distinguishes Deseret capital and small long I (U+10400 / U+10428)
