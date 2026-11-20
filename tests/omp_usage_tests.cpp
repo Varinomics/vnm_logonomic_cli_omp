@@ -93,7 +93,7 @@ void write(const fs::path& path, const std::vector<Json>& entries, const std::st
 class Fixture
 {
 public:
-    fs::path root = fs::temp_directory_path() / ("omp-usage-" + addon::random_nonce_hex());
+    fs::path root = fs::canonical(fs::temp_directory_path()) / ("omp-usage-" + addon::random_nonce_hex());
     fs::path home = root / "home";
     fs::path sources = home / ".omp/agent/sessions/project";
     fs::path storage = root / "host";
