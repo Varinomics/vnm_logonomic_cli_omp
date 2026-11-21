@@ -109,6 +109,7 @@ requested message.
 
 The [contributor guide](https://github.com/Varinomics/vnm_logonomic_cli_addon/blob/master/CONTRIBUTING.md) covers local package checks.
 Send provider pull requests to [the omp repository](https://github.com/Varinomics/vnm_logonomic_cli_omp/pulls).
+See the [repository license](LICENSE) for the terms covering Varinomics code.
 
 The example uses CMake and Ninja to build in
 `../build-omp`. To use local SDK sources, set `LOGONOMIC_CLI_ADDON_SDK_SOURCE`

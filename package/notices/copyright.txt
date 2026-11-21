@@ -1,4 +1,7 @@
-Copyright 2026 Varinomics. All rights reserved.
+Copyright (c) 2026, Varinomics Ltd.
+
+The Varinomics integration is licensed under BSD-2-Clause. The full terms
+are in the repository's LICENSE and in notices/LICENSE in the assembled package.
 
 oh-my-pi names the independently installed upstream software. This package
 does not include the oh-my-pi distribution or imply upstream endorsement.
