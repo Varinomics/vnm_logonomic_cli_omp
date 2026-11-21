@@ -1,8 +1,8 @@
 # Logonomic oh-my-pi add-on
 
 Native Logonomic CLI add-on for [oh-my-pi](https://github.com/can1357/oh-my-pi).
-It identifies the installed `omp` command and uses the public C++20
-[Logonomic CLI add-on SDK](https://github.com/Varinomics/logonomic/tree/master/sdk/logonomic_cli_addon_sdk).
+It identifies the installed `omp` command and uses the C++20
+[Logonomic CLI add-on SDK](https://github.com/Varinomics/vnm_logonomic_cli_addon/tree/master/sdk/logonomic_cli_addon_sdk).
 Install oh-my-pi separately using its upstream instructions; this package does
 not contain the CLI or change its installation.
 
@@ -107,15 +107,16 @@ requested message.
 
 ## Building
 
-Use CMake 3.25 or later, a C++20 compiler, and the workstation build queue.
-The SDK dependency follows the owned Logonomic `master` branch. To use a
-current local SDK source tree:
+The [contributor guide](https://github.com/Varinomics/vnm_logonomic_cli_addon/blob/master/CONTRIBUTING.md) covers local package checks.
+Send provider pull requests to [the omp repository](https://github.com/Varinomics/vnm_logonomic_cli_omp/pulls).
+
+Use CMake 3.25 or later and a C++20 compiler. The example builds in
+`../build-omp`. To use local SDK sources, set `LOGONOMIC_CLI_ADDON_SDK_SOURCE`
+to the SDK's `sdk/logonomic_cli_addon_sdk` directory at configure time.
 
 ```sh
-queued-build --slots 1 -- cmake -S . -B ../build-omp -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLOGONOMIC_CLI_ADDON_SDK_SOURCE=/path/to/logonomic/sdk/logonomic_cli_addon_sdk
-queued-build --slots 4 -- cmake --build ../build-omp --parallel 4
+cmake -S . -B ../build-omp -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build ../build-omp --parallel 4
 ctest --test-dir ../build-omp --output-on-failure
 ```
 
