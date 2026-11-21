@@ -59,6 +59,7 @@ endif()
 omp_target(omp_provider)
 
 add_executable(omp_adapter src/adapter.cpp)
+target_compile_definitions(omp_adapter PRIVATE LOGONOMIC_CLI_ADDON_ADAPTER_VERSION="${PROJECT_VERSION}")
 target_link_libraries(omp_adapter PRIVATE omp_provider)
 omp_target(omp_adapter)
 

@@ -110,7 +110,7 @@ requested message.
 The [contributor guide](https://github.com/Varinomics/vnm_logonomic_cli_addon/blob/master/CONTRIBUTING.md) covers local package checks.
 Send provider pull requests to [the omp repository](https://github.com/Varinomics/vnm_logonomic_cli_omp/pulls).
 
-Use CMake 3.25 or later and a C++20 compiler. The example builds in
+The example uses CMake and Ninja to build in
 `../build-omp`. To use local SDK sources, set `LOGONOMIC_CLI_ADDON_SDK_SOURCE`
 to the SDK's `sdk/logonomic_cli_addon_sdk` directory at configure time.
 
@@ -122,8 +122,8 @@ ctest --test-dir ../build-omp --output-on-failure
 
 The `omp_package` target assembles the indexed package below
 `../build-omp/package/logonomic.cli.omp` (`package/<config>/logonomic.cli.omp`
-with a multi-configuration generator). Linux package assembly also requires
-Python 3.11 or later and `patchelf` for the SDK's runtime deployment.
+with a multi-configuration generator). On Linux, install the SDK's
+[Linux packaging prerequisites](https://github.com/Varinomics/vnm_logonomic_cli_addon/blob/master/sdk/logonomic_cli_addon_sdk/docs/package_contract.md#linux-native-runtime-deployment).
 `cmake --install ../build-omp --prefix /fresh/export/directory` exports the
 package; the destination package directory must not already exist.
 
