@@ -2,4 +2,4 @@ Copyright 2026 Varinomics. All rights reserved.
 
 oh-my-pi names the independently installed upstream software. This package
 does not include the oh-my-pi distribution or imply upstream endorsement.
-See omp-mark.txt for the website mark attribution.
+See omp-mark.txt for the mark attribution and license.
